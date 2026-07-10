@@ -1,0 +1,48 @@
+name: 시트 탭 삭제
+
+on:
+  workflow_dispatch:
+    inputs:
+      sheet_names:
+        description: '삭제할 탭 이름 (쉼표 구분, 예: test_20260708,test_20260708b)'
+        required: true
+
+env:
+  SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install gspread google-auth
+      - name: 시트 삭제
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SHEET_NAMES: ${{ inputs.sheet_names }}
+        run: |
+          python - <<'EOF'
+          import json, os, sys
+          import gspread
+          from google.oauth2.service_account import Credentials
+
+          creds = Credentials.from_service_account_info(
+              json.loads(os.environ["GOOGLE_CREDENTIALS"]),
+              scopes=["https://www.googleapis.com/auth/spreadsheets"],
+          )
+          client = gspread.authorize(creds)
+          ss = client.open_by_key(os.environ["SPREADSHEET_ID"])
+
+          targets = [n.strip() for n in os.environ["SHEET_NAMES"].split(",") if n.strip()]
+          existing = {ws.title: ws for ws in ss.worksheets()}
+
+          for name in targets:
+              if name in existing:
+                  ss.del_worksheet(existing[name])
+                  print(f"삭제: '{name}'")
+              else:
+                  print(f"없음: '{name}'")
+          EOF
