@@ -102,8 +102,11 @@ _SECTION_JS = """
         if (!parentBx) return;
         const h2 = parentBx.querySelector('h2');
         if (h2 && h2.textContent.trim()) return;
-        const items = Array.from(root.children).filter(el => el.textContent.trim().length > 0);
-        if (items.length > 0) webDocEntries.push({ el: root, items });
+        // fds-web-doc- 클래스 자식만 실제 웹문서 항목으로 인정
+        const items = Array.from(root.children).filter(el =>
+            el.className && el.className.includes('fds-web-doc-') && el.textContent.trim().length > 0
+        );
+        if (items.length >= 2) webDocEntries.push({ el: root, items });
     });
 
     webDocEntries.sort((a, b) =>
