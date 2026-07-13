@@ -86,20 +86,20 @@ _SECTION_JS = """
         });
     }
 
-    // 2. fsolid_list 기반 섹션들 (웹문서·VIEW 통합 영역)
-    // 실제 화면 표시 순서 = fsolid_list 내 _slog_visible DIV 순서
-    // SCRIPT 태그는 트래킹 스크립트이므로 DIV만 카운트
-    const fsolidLists = Array.from(document.querySelectorAll('.fsolid_list'));
-    fsolidLists.forEach((list, listIdx) => {
-        const items = Array.from(list.children).filter(el => el.tagName === 'DIV');
+    // 2. spw_fsolid 섹션들 (섹션명 없는 영역 → 웹문서 1, 2, ...)
+    const fsolidSections = Array.from(document.querySelectorAll('.spw_fsolid'));
+    fsolidSections.forEach((sec, idx) => {
+        const list = sec.querySelector('.fsolid_list');
+        const items = list
+            ? Array.from(list.children).filter(el => el.tagName === 'DIV')
+            : Array.from(sec.children).filter(el => el.tagName === 'DIV');
         if (items.length === 0) return;
 
         let position = null;
         for (let i = 0; i < items.length; i++) {
             if (hasTarget(items[i].innerHTML || '')) { position = i + 1; break; }
         }
-        // 첫 번째 fsolid_list = 웹문서, 이후 = VIEW통합
-        const name = listIdx === 0 ? '웹문서' : 'VIEW통합';
+        const name = fsolidSections.length === 1 ? '웹문서' : `웹문서 ${idx + 1}`;
         results.push({
             name,
             has_target: position !== null,
@@ -128,9 +128,9 @@ _SECTION_JS = """
 
         let position = null;
         for (let i = 0; i < items.length; i++) {
-            if (hasTarget(items[i].innerHTML || '')) { position = i + 1; break; }
+            if (hasTarget(items[i].textContent || '')) { position = i + 1; break; }
         }
-        const has_target = position !== null || (items.length === 0 && hasTarget(placeSection.innerHTML || ''));
+        const has_target = position !== null || (items.length === 0 && hasTarget(placeSection.textContent || ''));
         results.push({
             name: '플레이스',
             has_target,
@@ -214,6 +214,29 @@ async def run_inspection(keyword: str):
             for d in debug:
                 print(f"  <{d['tag']} class=\"{d['cls']}\">  h2='{d['h2']}'")
         else:
+            # 플레이스 섹션 구조 추가 디버그
+            place_debug = await page.evaluate("""() => {
+                const sec = document.querySelector('[class*="place_section"]');
+                if (!sec) return null;
+                const ul = sec.querySelector('ul');
+                if (!ul) return { cls: sec.className, ul: null };
+                const lis = Array.from(ul.children).filter(el => el.tagName === 'LI');
+                return {
+                    cls: sec.className.slice(0, 80),
+                    ul_cls: ul.className.slice(0, 80),
+                    li_count: lis.length,
+                    items: lis.map((li, i) => ({
+                        idx: i,
+                        cls: li.className.slice(0, 60),
+                        text: li.textContent.trim().slice(0, 50),
+                    })),
+                };
+            }""")
+            if place_debug:
+                print(f"\n[플레이스 구조] sec.class={place_debug.get('cls')}")
+                print(f"  ul.class={place_debug.get('ul_cls')}  li수={place_debug.get('li_count')}")
+                for item in (place_debug.get('items') or []):
+                    print(f"  [{item['idx']+1}] {item['cls']} | {item['text']}")
             print(f"섹션 {len(raw)}개 발견:\n")
             for sec in raw:
                 if sec["has_target"] and sec["position"]:
