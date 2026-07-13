@@ -210,7 +210,8 @@ class SheetsSession:
             name: str = sec["name"]
             has: bool = sec["has_target"]
             pos: int | None = sec["position"]
-            cell_val = (str(pos) if pos else "있음") if has else "X"
+            positions = sec.get("positions") or ([pos] if pos else [])
+            cell_val = (",".join(map(str, positions)) if positions else "있음") if has else "X"
             if name in TRACKED_SECTIONS:
                 updates[name] = cell_val
             elif has:

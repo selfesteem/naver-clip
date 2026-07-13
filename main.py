@@ -123,7 +123,8 @@ def mark_result(df: pd.DataFrame, result: dict):
         has: bool = sec["has_target"]
         pos: int | None = sec["position"]
 
-        cell_val = (str(pos) if pos else "있음") if has else "X"
+        positions = sec.get("positions") or ([pos] if pos else [])
+        cell_val = (",".join(map(str, positions)) if positions else "있음") if has else "X"
 
         if name in TRACKED_SECTIONS:
             df.at[i, name] = cell_val
@@ -139,10 +140,14 @@ def is_done(val) -> bool:
 
 
 def _brief(sections: list[dict]) -> str:
-    found = [
-        f"{s['name']} {s['position']}위" if s["position"] else f"{s['name']} 있음"
-        for s in sections if s["has_target"]
-    ]
+    found = []
+    for s in sections:
+        if s["has_target"]:
+            positions = s.get("positions") or ([s["position"]] if s["position"] else [])
+            if positions:
+                found.append(f"{s['name']} {','.join(map(str, positions))}위")
+            else:
+                found.append(f"{s['name']} 있음")
     return " / ".join(found) if found else "미노출"
 
 

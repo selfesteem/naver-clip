@@ -73,15 +73,16 @@ _SECTION_JS = """
         }
         items = items.filter(i => (i.textContent || '').trim().length > 0);
 
-        let position = null;
+        const positions = [];
         for (let i = 0; i < items.length; i++) {
-            if (hasTarget(items[i].innerHTML || '')) { position = i + 1; break; }
+            if (hasTarget(items[i].innerHTML || '')) positions.push(i + 1);
         }
 
         results.push({
             name,
-            has_target: position !== null || (items.length === 0 && hasVisibleTarget(sec)),
-            position,
+            has_target: positions.length > 0 || (items.length === 0 && hasVisibleTarget(sec)),
+            position: positions[0] || null,
+            positions,
             total: items.length,
         });
     }
@@ -114,14 +115,15 @@ _SECTION_JS = """
     );
 
     webDocEntries.forEach(({ items }, idx) => {
-        let position = null;
+        const positions = [];
         for (let i = 0; i < items.length; i++) {
-            if (hasTarget(items[i].textContent || '')) { position = i + 1; break; }
+            if (hasTarget(items[i].textContent || '')) positions.push(i + 1);
         }
         results.push({
             name: `웹문서 ${idx + 1}`,
-            has_target: position !== null,
-            position,
+            has_target: positions.length > 0,
+            position: positions[0] || null,
+            positions,
             total: items.length,
         });
     });
@@ -144,15 +146,16 @@ _SECTION_JS = """
             items = Array.from(placeSection.querySelectorAll('[class*="place_item"], [class*="UEzoS"]'));
         }
 
-        let position = null;
+        const positions = [];
         for (let i = 0; i < items.length; i++) {
-            if (hasTarget(items[i].textContent || '')) { position = i + 1; break; }
+            if (hasTarget(items[i].textContent || '')) positions.push(i + 1);
         }
-        const has_target = position !== null || (items.length === 0 && hasTarget(placeSection.textContent || ''));
+        const has_target = positions.length > 0 || (items.length === 0 && hasTarget(placeSection.textContent || ''));
         results.push({
             name: '플레이스',
             has_target,
-            position,
+            position: positions[0] || null,
+            positions,
             total: items.length,
         });
     }
