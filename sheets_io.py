@@ -10,7 +10,7 @@ from google.oauth2.service_account import Credentials
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 TRACKED_SECTIONS = [
-    "네이버 클립", "뉴스", "웹문서 1", "웹문서 2", "플레이스",
+    "네이버 클립", "뉴스", "인기글", "이미지", "웹문서 1", "웹문서 2", "플레이스",
 ]
 RESULT_COLS = ["처리완료"] + TRACKED_SECTIONS + ["기타 노출", "오류"]
 
