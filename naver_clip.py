@@ -99,7 +99,7 @@ _SECTION_JS = """
         for (let i = 0; i < items.length; i++) {
             if (hasTarget(items[i].innerHTML || '')) { position = i + 1; break; }
         }
-        const name = fsolidSections.length === 1 ? '웹문서' : `웹문서 ${idx + 1}`;
+        const name = `웹문서 ${idx + 1}`;
         results.push({
             name,
             has_target: position !== null,
