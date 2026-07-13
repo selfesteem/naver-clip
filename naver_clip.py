@@ -86,22 +86,37 @@ _SECTION_JS = """
         });
     }
 
-    // 2. spw_fsolid 섹션들 (섹션명 없는 영역 → 웹문서 1, 2, ...)
-    const fsolidSections = Array.from(document.querySelectorAll('.spw_fsolid'));
-    fsolidSections.forEach((sec, idx) => {
+    // 2. 웹문서 섹션 — spw_fsolid 방식과 fds-web-list-root 방식 둘 다 처리, DOM 순서 유지
+    const webDocEntries = [];
+
+    document.querySelectorAll('.spw_fsolid').forEach(sec => {
         const list = sec.querySelector('.fsolid_list');
         const items = list
             ? Array.from(list.children).filter(el => el.tagName === 'DIV')
             : Array.from(sec.children).filter(el => el.tagName === 'DIV');
-        if (items.length === 0) return;
+        if (items.length > 0) webDocEntries.push({ el: sec, items });
+    });
 
+    document.querySelectorAll('[class*="fds-web-list-root"]').forEach(root => {
+        const parentBx = root.closest('[class*="api_subject_bx"]');
+        if (!parentBx) return;
+        const h2 = parentBx.querySelector('h2');
+        if (h2 && h2.textContent.trim()) return;
+        const items = Array.from(root.children).filter(el => el.textContent.trim().length > 0);
+        if (items.length > 0) webDocEntries.push({ el: root, items });
+    });
+
+    webDocEntries.sort((a, b) =>
+        a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+    );
+
+    webDocEntries.forEach(({ items }, idx) => {
         let position = null;
         for (let i = 0; i < items.length; i++) {
-            if (hasTarget(items[i].innerHTML || '')) { position = i + 1; break; }
+            if (hasTarget(items[i].textContent || '')) { position = i + 1; break; }
         }
-        const name = `웹문서 ${idx + 1}`;
         results.push({
-            name,
+            name: `웹문서 ${idx + 1}`,
             has_target: position !== null,
             position,
             total: items.length,
