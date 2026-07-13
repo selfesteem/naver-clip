@@ -221,19 +221,74 @@ async def run_inspection(keyword: str):
         for sec in raw:
             sec["name"] = normalize_section(sec["name"])
 
+        # 페이지 전체 섹션 구조 덤프
+        all_sections_debug = await page.evaluate("""() => {
+            const out = [];
+            // named sections
+            document.querySelectorAll('[class*="api_subject_bx"], .sc_new, [class*="sc_new"]').forEach(el => {
+                const h2 = el.querySelector('h2');
+                out.push({
+                    type: 'named',
+                    h2: h2 ? h2.textContent.trim().slice(0, 40) : '',
+                    cls: el.className.slice(0, 80),
+                    top: el.getBoundingClientRect().top,
+                });
+            });
+            // spw_fsolid
+            document.querySelectorAll('.spw_fsolid').forEach(el => {
+                const list = el.querySelector('.fsolid_list');
+                const items = list
+                    ? Array.from(list.children).filter(e => e.tagName === 'DIV')
+                    : Array.from(el.children).filter(e => e.tagName === 'DIV');
+                out.push({
+                    type: 'fsolid',
+                    h2: '',
+                    cls: el.className.slice(0, 80),
+                    items: items.length,
+                    top: el.getBoundingClientRect().top,
+                    itemTexts: items.map(i => i.textContent.trim().slice(0, 40)),
+                });
+            });
+            // fds-web-list-root
+            document.querySelectorAll('[class*="fds-web-list-root"]').forEach(root => {
+                const allChildren = Array.from(root.children);
+                const webDocItems = allChildren.filter(el =>
+                    el.className && el.className.includes('fds-web-doc-') && el.textContent.trim().length > 0
+                );
+                const parentBx = root.closest('[class*="api_subject_bx"]');
+                const h2 = parentBx ? parentBx.querySelector('h2') : null;
+                out.push({
+                    type: 'fds-web-list-root',
+                    h2: h2 ? h2.textContent.trim().slice(0, 40) : '',
+                    cls: root.className.slice(0, 80),
+                    allChildren: allChildren.length,
+                    webDocItems: webDocItems.length,
+                    top: root.getBoundingClientRect().top,
+                    childClasses: allChildren.map(el => (el.className || '').slice(0, 50)),
+                    itemTexts: webDocItems.map(i => i.textContent.trim().slice(0, 50)),
+                });
+            });
+            out.sort((a, b) => a.top - b.top);
+            return out;
+        }""")
+        print("\n[전체 섹션 구조]\n")
+        for s in all_sections_debug:
+            t = s['type']
+            if t == 'named':
+                print(f"  [named] h2='{s['h2']}'  cls={s['cls'][:60]}")
+            elif t == 'fsolid':
+                print(f"  [fsolid] items={s['items']}  cls={s['cls'][:60]}")
+                for i, txt in enumerate(s.get('itemTexts', [])):
+                    print(f"    [{i+1}] {txt}")
+            elif t == 'fds-web-list-root':
+                print(f"  [fds-web-list-root] h2='{s['h2']}'  allChildren={s['allChildren']}  webDocItems={s['webDocItems']}")
+                print(f"    childClasses: {s.get('childClasses', [])}")
+                for i, txt in enumerate(s.get('itemTexts', [])):
+                    print(f"    [{i+1}] {txt}")
+        print()
+
         if not raw:
-            print("섹션을 찾지 못했습니다. 페이지 구조 디버그:")
-            debug = await page.evaluate("""() =>
-                Array.from(document.querySelectorAll('section, [class*="sc_"], [class*="area"]'))
-                    .slice(0, 25)
-                    .map(el => ({
-                        tag: el.tagName,
-                        cls: el.className.slice(0, 70),
-                        h2: ((el.querySelector('h2') || {}).textContent || '').trim().slice(0, 40),
-                    }))
-            """)
-            for d in debug:
-                print(f"  <{d['tag']} class=\"{d['cls']}\">  h2='{d['h2']}'")
+            print("섹션을 찾지 못했습니다.")
         else:
             # 플레이스 섹션 구조 추가 디버그
             place_debug = await page.evaluate("""() => {
