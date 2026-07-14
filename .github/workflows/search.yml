@@ -10,8 +10,8 @@ on:
         default: ''
         required: false
       job_count:
-        description: '병렬 job 수 (기본: 5, 최대: 5)'
-        default: '5'
+        description: '병렬 job 수 (기본: 10, 최대: 10)'
+        default: '10'
         required: false
       max_keywords:
         description: '처리할 최대 키워드 수 (테스트용, 비워두면 전체)'
@@ -28,8 +28,18 @@ env:
   TARGET_KEYWORDS: ${{ secrets.TARGET_KEYWORDS }}
 
 jobs:
+  # ── 0단계: repo 공개 ────────────────────────────────────────────────
+  repo-public:
+    runs-on: ubuntu-latest
+    steps:
+      - name: repo 공개
+        run: gh api repos/${{ github.repository }} --method PATCH -f private=false
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOGGLE_TOKEN }}
+
   # ── 1단계: 시트 생성 → config.json을 artifact로 업로드 ───────────────
   prepare:
+    needs: repo-public
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        job_index: [0, 1, 2, 3, 4]   # job_count 최대치만큼 고정
+        job_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # job_count 최대치만큼 고정
       fail-fast: false
 
     steps:
@@ -155,3 +165,14 @@ jobs:
             --start ${{ steps.range.outputs.start }} \
             --count ${{ steps.range.outputs.count }} \
             --headless
+
+  # ── 마지막 단계: repo 비공개 ────────────────────────────────────────
+  repo-private:
+    needs: search
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: repo 비공개
+        run: gh api repos/${{ github.repository }} --method PATCH -f private=true
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOGGLE_TOKEN }}
