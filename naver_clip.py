@@ -35,6 +35,11 @@ _SECTION_JS = """
         clone.querySelectorAll('script, style').forEach(e => e.remove());
         return keywords.some(k => clone.innerHTML.includes(k));
     }
+    function hasAltTarget(el) {
+        return Array.from(el.querySelectorAll('img')).some(img =>
+            keywords.some(k => (img.getAttribute('alt') || '').includes(k))
+        );
+    }
 
     const results = [];
 
@@ -73,14 +78,18 @@ _SECTION_JS = """
         }
         items = items.filter(i => (i.textContent || '').trim().length > 0);
 
+        const isImageSection = name.includes('이미지');
         const positions = [];
         for (let i = 0; i < items.length; i++) {
-            if (hasTarget(items[i].innerHTML || '')) positions.push(i + 1);
+            const matched = isImageSection
+                ? hasAltTarget(items[i])
+                : hasTarget(items[i].innerHTML || '');
+            if (matched) positions.push(i + 1);
         }
 
         results.push({
             name,
-            has_target: positions.length > 0 || (items.length === 0 && hasVisibleTarget(sec)),
+            has_target: positions.length > 0 || (items.length === 0 && (isImageSection ? hasAltTarget(sec) : hasVisibleTarget(sec))),
             position: positions[0] || null,
             positions,
             total: items.length,
