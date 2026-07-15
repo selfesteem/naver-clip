@@ -122,7 +122,7 @@ jobs:
         id: range
         env:
           JOB_INDEX: ${{ matrix.job_index }}
-          JOB_COUNT: ${{ inputs.job_count || '5' }}
+          JOB_COUNT: ${{ inputs.job_count || '10' }}
         run: |
           python - <<'EOF'
           import json, math, os
