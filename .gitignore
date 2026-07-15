@@ -27,3 +27,4 @@ __pycache__/
 
 # Claude Code 세션
 .claude/
+.playwright-mcp/

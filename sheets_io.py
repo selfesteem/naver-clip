@@ -1,4 +1,5 @@
 """Google Sheets 읽기/쓰기 모듈"""
+import copy
 import json
 import os
 import time
@@ -237,7 +238,7 @@ class SheetsSession:
             return
         for attempt in range(4):
             try:
-                self._ws.batch_update(self._pending, value_input_option="RAW")
+                self._ws.batch_update(copy.deepcopy(self._pending), value_input_option="RAW")
                 break
             except Exception as e:
                 if attempt == 3:
