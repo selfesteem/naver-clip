@@ -1,8 +1,6 @@
 name: 네이버 클립 순위 검색
 
 on:
-  schedule:
-    - cron: '0 0 * * 1-5'   # UTC 00:00 = KST 09:00
   workflow_dispatch:
     inputs:
       sheet_name:
