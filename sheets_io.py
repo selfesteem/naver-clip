@@ -16,21 +16,26 @@ TRACKED_SECTIONS = [
 RESULT_COLS = ["처리완료"] + TRACKED_SECTIONS + ["기타 노출", "오류"]
 
 
+def _api_call(fn, *args, **kwargs):
+    """429 쿼터 초과 시 지수 백오프로 재시도 (10s / 20s / 40s)."""
+    for attempt in range(4):
+        try:
+            return fn(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            status = getattr(getattr(e, "response", None), "status_code", 0)
+            if status != 429 or attempt == 3:
+                raise
+            wait = 10 * (2 ** attempt)
+            print(f"\n  Sheets 429 (재시도 {attempt+1}/3, {wait}초 후)")
+            time.sleep(wait)
+
+
 def _get_client() -> gspread.Client:
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
     if not creds_json:
         raise EnvironmentError("GOOGLE_CREDENTIALS 환경변수가 설정되지 않았습니다.")
     creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=SCOPES)
     return gspread.authorize(creds)
-
-
-def _open_worksheet(spreadsheet_id: str, gid: int) -> gspread.Worksheet:
-    client = _get_client()
-    ss = client.open_by_key(spreadsheet_id)
-    for ws in ss.worksheets():
-        if ws.id == gid:
-            return ws
-    raise ValueError(f"Sheet GID={gid} 를 찾을 수 없습니다.")
 
 
 def create_or_get_result_sheet(
@@ -41,44 +46,31 @@ def create_or_get_result_sheet(
     """
     날짜별 결과 시트 탭을 만들거나 이미 있으면 그대로 사용.
 
-    - source_gid  : 키워드 원본 시트 GID
-    - sheet_name  : 새 탭 이름 (예: "20260708_오전")
-
     Returns: (result_sheet_gid, total_keyword_count)
     """
     client = _get_client()
     ss = client.open_by_key(spreadsheet_id)
+    ws_list = _api_call(ss.worksheets)
+    ws_by_id = {ws.id: ws for ws in ws_list}
+    ws_by_title = {ws.title: ws for ws in ws_list}
 
-    # 이미 존재하는지 확인
-    existing_ws = None
-    for ws in ss.worksheets():
-        if ws.title == sheet_name:
-            existing_ws = ws
-            break
-
-    if existing_ws is not None:
-        all_vals = existing_ws.get_all_values()
-        total = sum(1 for row in all_vals[1:] if row and row[0].strip())
-        if total > 0:
-            # 키워드가 있으면 그대로 이어서 처리 (당일 재실행)
-            print(f"기존 시트 사용: '{sheet_name}' (키워드 {total}개)")
-            return existing_ws.id, total
-        # 키워드가 없으면 이전 실행이 중간에 실패한 것 → 아래에서 다시 채움
-
-    # 원본 시트에서 키워드 목록 읽기
-    source_ws = None
-    for ws in ss.worksheets():
-        if ws.id == source_gid:
-            source_ws = ws
-            break
+    source_ws = ws_by_id.get(source_gid)
     if source_ws is None:
         raise ValueError(f"원본 시트 GID={source_gid} 를 찾을 수 없습니다.")
 
-    all_source = source_ws.get_all_values()
+    existing_ws = ws_by_title.get(sheet_name)
+
+    if existing_ws is not None:
+        all_vals = _api_call(existing_ws.get_all_values)
+        total = sum(1 for row in all_vals[1:] if row and row[0].strip())
+        if total > 0:
+            print(f"기존 시트 사용: '{sheet_name}' (키워드 {total}개)")
+            return existing_ws.id, total
+
+    all_source = _api_call(source_ws.get_all_values)
     if not all_source:
         raise ValueError("원본 시트가 비어 있습니다.")
 
-    # 키워드 컬럼 찾기
     src_header = all_source[0]
     kw_idx = 0
     for i, h in enumerate(src_header):
@@ -95,17 +87,15 @@ def create_or_get_result_sheet(
     header_row = ["키워드"] + RESULT_COLS
 
     if existing_ws is not None:
-        # 빈 채로 남은 기존 시트에 데이터만 채우기
         target_ws = existing_ws
         print(f"기존 시트 재초기화: '{sheet_name}'")
     else:
-        # 새 시트 생성
         target_ws = ss.add_worksheet(title=sheet_name, rows=len(keywords) + 1, cols=15)
         print(f"새 시트 생성: '{sheet_name}' (키워드 {len(keywords)}개)")
 
-    target_ws.update([header_row], "A1")
+    _api_call(target_ws.update, [header_row], "A1")
     if keywords:
-        target_ws.update([[kw] for kw in keywords], "A2")
+        _api_call(target_ws.update, [[kw] for kw in keywords], "A2")
 
     return target_ws.id, len(keywords)
 
@@ -118,9 +108,23 @@ class SheetsSession:
     def __init__(self, spreadsheet_id: str, gid: int, source_gid: int | None = None):
         self.spreadsheet_id = spreadsheet_id
         self.gid = gid
-        self._ws = _open_worksheet(spreadsheet_id, gid)
         self._separate_source = source_gid is not None and source_gid != gid
-        self._source_ws = _open_worksheet(spreadsheet_id, source_gid) if self._separate_source else self._ws
+
+        client = _get_client()
+        ss = client.open_by_key(spreadsheet_id)
+        ws_map = {ws.id: ws for ws in _api_call(ss.worksheets)}
+
+        if gid not in ws_map:
+            raise ValueError(f"Sheet GID={gid} 를 찾을 수 없습니다.")
+        self._ws = ws_map[gid]
+
+        if self._separate_source:
+            if source_gid not in ws_map:
+                raise ValueError(f"Sheet GID={source_gid} 를 찾을 수 없습니다.")
+            self._source_ws = ws_map[source_gid]
+        else:
+            self._source_ws = self._ws
+
         self._refresh_header()
         self._ensure_result_headers()
         self._pending: list[dict] = []
@@ -129,7 +133,7 @@ class SheetsSession:
     # ── 헤더 관리 ────────────────────────────────────────────────────
 
     def _refresh_header(self):
-        self._header: list[str] = self._ws.row_values(1)
+        self._header: list[str] = _api_call(self._ws.row_values, 1)
         self._header_map: dict[str, int] = {n: i + 1 for i, n in enumerate(self._header)}
 
     def _ensure_result_headers(self):
@@ -141,13 +145,13 @@ class SheetsSession:
                 self._header_map[col] = len(self._header)
                 added = True
         if added:
-            self._ws.update([self._header], "1:1")
+            _api_call(self._ws.update, [self._header], "1:1")
 
     # ── 읽기 ─────────────────────────────────────────────────────────
 
     def count_keywords(self) -> int:
         """전체 키워드 수 (헤더 제외, 빈 행 제외)."""
-        all_values = self._source_ws.get_all_values()
+        all_values = _api_call(self._source_ws.get_all_values)
         if len(all_values) < 2:
             return 0
         src_header = all_values[0]
@@ -163,7 +167,7 @@ class SheetsSession:
             keywords    : 키워드 목록
             row_indices : 결과 시트 기준 1-based 행 번호
         """
-        src_all = self._source_ws.get_all_values()
+        src_all = _api_call(self._source_ws.get_all_values)
         if len(src_all) < 2:
             return [], []
 
@@ -172,10 +176,9 @@ class SheetsSession:
         data_rows = src_all[1:]
         sliced = data_rows[start : (start + count) if count else None]
 
-        # 처리완료 상태는 결과 시트에서 확인
         done_col = self._header_map.get("처리완료")  # 1-based
         if self._separate_source:
-            result_all = self._ws.get_all_values()
+            result_all = _api_call(self._ws.get_all_values)
             result_data = result_all[1:] if len(result_all) > 1 else []
         else:
             result_data = data_rows
@@ -236,16 +239,7 @@ class SheetsSession:
         """버퍼를 시트에 일괄 기록."""
         if not self._pending:
             return
-        for attempt in range(4):
-            try:
-                self._ws.batch_update(copy.deepcopy(self._pending), value_input_option="RAW")
-                break
-            except Exception as e:
-                if attempt == 3:
-                    raise
-                wait = 10 * (2 ** attempt)  # 10s, 20s, 40s
-                print(f"\n  Sheets 쓰기 오류 (재시도 {attempt + 1}/3, {wait}초 후): {e}")
-                time.sleep(wait)
+        _api_call(self._ws.batch_update, copy.deepcopy(self._pending), value_input_option="RAW")
         self._pending = []
         self._staged_count = 0
 
