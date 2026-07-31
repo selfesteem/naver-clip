@@ -13,6 +13,7 @@
 """
 
 import os
+import re
 import sys
 import time
 import hmac
@@ -21,6 +22,9 @@ import base64
 import argparse
 from pathlib import Path
 from datetime import date
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import requests
 import pandas as pd
@@ -31,7 +35,7 @@ from urllib.parse import quote_plus
 API_BASE = "https://api.searchad.naver.com"
 KEYWORD_TOOL_PATH = "/keywordstool"
 BATCH_SIZE = 5
-REQUEST_DELAY = 0.12
+REQUEST_DELAY = 0.5
 PROGRESS_EVERY = 100
 
 
@@ -45,6 +49,29 @@ def _sign(secret_key: str, timestamp: str, method: str, path: str) -> str:
 
 # ── API 호출 ──────────────────────────────────────────────────────────────────
 
+def _clean(kw: str) -> str:
+    kw = re.sub(r"\(.*?\)", "", kw)  # 괄호 및 내용 제거
+    kw = kw.replace("·", "").replace(" ", "")
+    return kw
+
+
+def _fetch_single(kw: str, api_key: str, secret_key: str, customer_id: str) -> list[dict]:
+    timestamp = str(int(time.time() * 1000))
+    headers = {
+        "X-Timestamp": timestamp,
+        "X-API-KEY": api_key,
+        "X-Customer": customer_id,
+        "X-Signature": _sign(secret_key, timestamp, "GET", KEYWORD_TOOL_PATH),
+    }
+    hint = quote_plus(_clean(kw))
+    url = f"{API_BASE}{KEYWORD_TOOL_PATH}?hintKeywords={hint}&showDetail=1"
+    r = requests.get(url, headers=headers, timeout=15)
+    if not r.ok:
+        print(f"  [스킵] '{kw}' — {r.status_code}: {r.text[:100]}")
+        return []
+    return r.json().get("keywordList", [])
+
+
 def fetch_batch(batch: list[str], api_key: str, secret_key: str, customer_id: str) -> list[dict]:
     timestamp = str(int(time.time() * 1000))
     headers = {
@@ -53,10 +80,16 @@ def fetch_batch(batch: list[str], api_key: str, secret_key: str, customer_id: st
         "X-Customer": customer_id,
         "X-Signature": _sign(secret_key, timestamp, "GET", KEYWORD_TOOL_PATH),
     }
-    # Naver 검색광고 API는 공백 없는 키워드만 허용 (이혼 소송 → 이혼소송)
-    hint = ",".join(quote_plus(kw.replace(" ", "")) for kw in batch)
+    hint = ",".join(quote_plus(_clean(kw)) for kw in batch)
     url = f"{API_BASE}{KEYWORD_TOOL_PATH}?hintKeywords={hint}&showDetail=1"
     r = requests.get(url, headers=headers, timeout=15)
+    if r.status_code == 400:
+        # 배치 내 문제 키워드 격리: 1개씩 재시도
+        results = []
+        for kw in batch:
+            results.extend(_fetch_single(kw, api_key, secret_key, customer_id))
+            time.sleep(REQUEST_DELAY)
+        return results
     if not r.ok:
         raise requests.HTTPError(
             f"{r.status_code} {r.reason} — 응답: {r.text[:300]}",

@@ -1,0 +1,106 @@
+name: 경쟁사 순위 검색 (대륜 미노출 섹션)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sheet_name:
+        description: '시트 탭 이름 (비워두면 자동: YYYYMMDD_경쟁사)'
+        default: ''
+        required: false
+      max_keywords:
+        description: '처리할 최대 키워드 수 (테스트용, 비워두면 전체)'
+        default: ''
+        required: false
+
+  # 자동 스케쥴 — 필요 시 아래 주석 해제 후 trigger repo에서 호출
+  # schedule:
+  #   - cron: '0 1 * * 1'  # 매주 월요일 오전 10시 (KST)
+
+concurrency:
+  group: naver-clip-competitors
+  cancel-in-progress: true
+
+env:
+  SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+  SOURCE_GID: ${{ secrets.SOURCE_GID }}
+  TARGET_KEYWORDS: ${{ secrets.TARGET_KEYWORDS }}
+
+jobs:
+  # ── 1단계: 결과 시트 생성 ────────────────────────────────────────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      gid: ${{ steps.setup.outputs.gid }}
+      source_gid: ${{ steps.setup.outputs.source_gid }}
+      total: ${{ steps.setup.outputs.total }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: pip install gspread google-auth
+
+      - name: 시트 생성
+        id: setup
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          MANUAL_SHEET_NAME: ${{ inputs.sheet_name || '' }}
+          MAX_KEYWORDS: ${{ inputs.max_keywords || '' }}
+        run: |
+          python - <<'EOF'
+          import json, os, sys
+          from datetime import datetime, timezone, timedelta
+          sys.path.insert(0, ".")
+          from competitors import create_competitor_sheet
+
+          KST = timezone(timedelta(hours=9))
+          now = datetime.now(KST)
+          sheet_name = os.environ.get("MANUAL_SHEET_NAME") or f"{now.strftime('%Y%m%d')}_경쟁사"
+
+          new_gid, total = create_competitor_sheet(
+              os.environ["SPREADSHEET_ID"],
+              int(os.environ["SOURCE_GID"]),
+              sheet_name,
+          )
+
+          max_kw = os.environ.get("MAX_KEYWORDS", "").strip()
+          if max_kw:
+              total = min(total, int(max_kw))
+              print(f"테스트 모드: 상위 {total}개만 처리")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"gid={new_gid}\nsource_gid={os.environ['SOURCE_GID']}\ntotal={total}\n")
+
+          print(f"→ 시트: '{sheet_name}', GID={new_gid}, 키워드 {total}개")
+          EOF
+
+  # ── 2단계: 검색 실행 (단일 job) ──────────────────────────────────────────────
+  search:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: Playwright 브라우저 설치
+        run: playwright install chromium --with-deps
+
+      - name: 경쟁사 검색 실행
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          python competitors.py \
+            --sheets-id ${{ env.SPREADSHEET_ID }} \
+            --sheet-gid ${{ needs.prepare.outputs.gid }} \
+            --source-gid ${{ needs.prepare.outputs.source_gid }} \
+            --count ${{ needs.prepare.outputs.total }} \
+            --headless
