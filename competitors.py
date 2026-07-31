@@ -19,7 +19,6 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import quote
 
-import pandas as pd
 from playwright.async_api import async_playwright, Page
 
 from naver_clip import MOBILE_UA, MOBILE_VIEWPORT, normalize_section, _get_target_keywords
@@ -256,6 +255,7 @@ async def search_competitors(page: Page, keyword: str) -> dict:
 
 
 def load_keywords(filepath: str, col: str | None, start: int, count: int | None) -> list[str]:
+    import pandas as pd
     path = Path(filepath)
     if not path.exists():
         sys.exit(f"파일을 찾을 수 없습니다: {filepath}")
@@ -276,7 +276,8 @@ def load_keywords(filepath: str, col: str | None, start: int, count: int | None)
     return all_kws[start : (start + count) if count else None]
 
 
-def load_or_create_output(output_path: Path, keywords: list[str]) -> pd.DataFrame:
+def load_or_create_output(output_path: Path, keywords: list[str]):
+    import pandas as pd
     if output_path.exists():
         df = pd.read_excel(output_path, dtype=str)
         for c in RESULT_COLS:
@@ -290,7 +291,8 @@ def load_or_create_output(output_path: Path, keywords: list[str]) -> pd.DataFram
     return df
 
 
-def save_dataframe(df: pd.DataFrame, filepath: Path):
+def save_dataframe(df, filepath: Path):
+    import pandas as pd
     with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="경쟁사")
         ws = writer.sheets["경쟁사"]
@@ -300,10 +302,11 @@ def save_dataframe(df: pd.DataFrame, filepath: Path):
 
 
 def is_done(val) -> bool:
+    import pandas as pd
     return pd.notna(val) and str(val).strip() == "Y"
 
 
-def mark_result(df: pd.DataFrame, result: dict):
+def mark_result(df, result: dict):
     mask = df["키워드"].astype(str).str.strip() == result["keyword"]
     idxs = df[mask].index
     if not len(idxs):
