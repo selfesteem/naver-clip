@@ -101,6 +101,62 @@ def create_or_get_result_sheet(
     return target_ws.id, len(keywords)
 
 
+def create_competitor_sheet(
+    spreadsheet_id: str,
+    source_gid: int,
+    sheet_name: str,
+    result_cols: list[str],
+) -> tuple[int, int]:
+    """
+    경쟁사 결과 시트 탭을 만들거나 이미 있으면 그대로 사용.
+
+    Returns: (result_sheet_gid, total_keyword_count)
+    """
+    client = _get_client()
+    ss = client.open_by_key(spreadsheet_id)
+    ws_list = _api_call(ss.worksheets)
+    ws_by_id = {ws.id: ws for ws in ws_list}
+    ws_by_title = {ws.title: ws for ws in ws_list}
+
+    source_ws = ws_by_id.get(source_gid)
+    if source_ws is None:
+        raise ValueError(f"원본 시트 GID={source_gid} 를 찾을 수 없습니다.")
+
+    existing_ws = ws_by_title.get(sheet_name)
+    if existing_ws is not None:
+        all_vals = _api_call(existing_ws.get_all_values)
+        total = sum(1 for row in all_vals[1:] if row and row[0].strip())
+        if total > 0:
+            print(f"기존 시트 사용: '{sheet_name}' (키워드 {total}개)")
+            return existing_ws.id, total
+
+    all_source = _api_call(source_ws.get_all_values)
+    if not all_source:
+        raise ValueError("원본 시트가 비어 있습니다.")
+
+    src_header = all_source[0]
+    kw_idx = next((i for i, h in enumerate(src_header) if h == "키워드"), 0)
+    keywords = [
+        row[kw_idx].strip()
+        for row in all_source[1:]
+        if kw_idx < len(row) and row[kw_idx].strip()
+    ]
+
+    header_row = ["키워드"] + result_cols
+    if existing_ws is not None:
+        target_ws = existing_ws
+        print(f"기존 시트 재초기화: '{sheet_name}'")
+    else:
+        target_ws = ss.add_worksheet(title=sheet_name, rows=len(keywords) + 1, cols=len(header_row))
+        print(f"새 시트 생성: '{sheet_name}' (키워드 {len(keywords)}개)")
+
+    _api_call(target_ws.update, [header_row], "A1")
+    if keywords:
+        _api_call(target_ws.update, [[kw] for kw in keywords], "A2")
+
+    return target_ws.id, len(keywords)
+
+
 class SheetsSession:
     """시트 읽기/쓰기 세션 — 헤더 캐시 + 배치 쓰기 지원."""
 

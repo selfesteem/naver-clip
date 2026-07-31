@@ -10,11 +10,9 @@
 import asyncio
 import argparse
 import copy
-import json
 import sys
 import random
 import os
-import time
 from datetime import date
 from pathlib import Path
 from urllib.parse import quote
@@ -437,82 +435,7 @@ async def run(input_file: str, col: str | None, headless: bool,
 
 # ── Google Sheets 지원 ────────────────────────────────────────────────────────
 
-def _sheets_api_call(fn, *args, **kwargs):
-    try:
-        import gspread
-    except ImportError:
-        raise ImportError("gspread 미설치. pip install gspread google-auth")
-    for attempt in range(4):
-        try:
-            return fn(*args, **kwargs)
-        except gspread.exceptions.APIError as e:
-            status = getattr(getattr(e, "response", None), "status_code", 0)
-            if status != 429 or attempt == 3:
-                raise
-            wait = 10 * (2 ** attempt)
-            print(f"\n  Sheets 429 (재시도 {attempt+1}/3, {wait}초 후)")
-            time.sleep(wait)
-
-
-def _get_sheets_client():
-    try:
-        import gspread
-        from google.oauth2.service_account import Credentials
-    except ImportError:
-        raise ImportError("gspread / google-auth 미설치")
-    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-    if not creds_json:
-        raise EnvironmentError("GOOGLE_CREDENTIALS 환경변수가 설정되지 않았습니다.")
-    creds = Credentials.from_service_account_info(
-        json.loads(creds_json),
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
-    return gspread.authorize(creds)
-
-
-def create_competitor_sheet(spreadsheet_id: str, source_gid: int, sheet_name: str) -> tuple[int, int]:
-    """경쟁사 결과 시트 생성 또는 재사용. (result_gid, keyword_count) 반환."""
-    client = _get_sheets_client()
-    ss = client.open_by_key(spreadsheet_id)
-    ws_list = _sheets_api_call(ss.worksheets)
-    ws_by_id = {ws.id: ws for ws in ws_list}
-    ws_by_title = {ws.title: ws for ws in ws_list}
-
-    source_ws = ws_by_id.get(source_gid)
-    if source_ws is None:
-        raise ValueError(f"원본 시트 GID={source_gid} 를 찾을 수 없습니다.")
-
-    existing_ws = ws_by_title.get(sheet_name)
-    if existing_ws is not None:
-        all_vals = _sheets_api_call(existing_ws.get_all_values)
-        total = sum(1 for row in all_vals[1:] if row and row[0].strip())
-        if total > 0:
-            print(f"기존 시트 사용: '{sheet_name}' (키워드 {total}개)")
-            return existing_ws.id, total
-
-    all_source = _sheets_api_call(source_ws.get_all_values)
-    if not all_source:
-        raise ValueError("원본 시트가 비어 있습니다.")
-    src_header = all_source[0]
-    kw_idx = next((i for i, h in enumerate(src_header) if h == "키워드"), 0)
-    keywords = [
-        row[kw_idx].strip()
-        for row in all_source[1:]
-        if kw_idx < len(row) and row[kw_idx].strip()
-    ]
-
-    header_row = ["키워드"] + RESULT_COLS
-    if existing_ws is not None:
-        target_ws = existing_ws
-    else:
-        target_ws = ss.add_worksheet(title=sheet_name, rows=len(keywords) + 1, cols=len(header_row))
-        print(f"새 시트 생성: '{sheet_name}' (키워드 {len(keywords)}개)")
-
-    _sheets_api_call(target_ws.update, [header_row], "A1")
-    if keywords:
-        _sheets_api_call(target_ws.update, [[kw] for kw in keywords], "A2")
-
-    return target_ws.id, len(keywords)
+from sheets_io import _api_call as _sh, _get_client as _sh_client, create_competitor_sheet  # noqa: E402
 
 
 class CompetitorSheetsSession:
@@ -523,13 +446,10 @@ class CompetitorSheetsSession:
     def __init__(self, spreadsheet_id: str, gid: int, source_gid: int | None = None):
         from gspread.utils import rowcol_to_a1
         self._rowcol_to_a1 = rowcol_to_a1
-        self.spreadsheet_id = spreadsheet_id
-        self.gid = gid
         self._separate_source = source_gid is not None and source_gid != gid
 
-        client = _get_sheets_client()
-        ss = client.open_by_key(spreadsheet_id)
-        ws_map = {ws.id: ws for ws in _sheets_api_call(ss.worksheets)}
+        ss = _sh_client().open_by_key(spreadsheet_id)
+        ws_map = {ws.id: ws for ws in _sh(ss.worksheets)}
 
         if gid not in ws_map:
             raise ValueError(f"Sheet GID={gid} 를 찾을 수 없습니다.")
@@ -542,13 +462,13 @@ class CompetitorSheetsSession:
         else:
             self._source_ws = self._ws
 
-        self._header: list[str] = _sheets_api_call(self._ws.row_values, 1)
+        self._header: list[str] = _sh(self._ws.row_values, 1)
         self._header_map: dict[str, int] = {n: i + 1 for i, n in enumerate(self._header)}
         self._pending: list[dict] = []
         self._staged_count = 0
 
     def read_keywords(self, start: int, count: int | None) -> tuple[list[str], list[int]]:
-        src_all = _sheets_api_call(self._source_ws.get_all_values)
+        src_all = _sh(self._source_ws.get_all_values)
         if len(src_all) < 2:
             return [], []
         src_header = src_all[0]
@@ -558,7 +478,7 @@ class CompetitorSheetsSession:
 
         done_col = self._header_map.get("처리완료")
         if self._separate_source:
-            result_all = _sheets_api_call(self._ws.get_all_values)
+            result_all = _sh(self._ws.get_all_values)
             result_data = result_all[1:] if len(result_all) > 1 else []
         else:
             result_data = data_rows
@@ -582,10 +502,7 @@ class CompetitorSheetsSession:
         return keywords, row_indices
 
     def stage_result(self, row_idx: int, result: dict):
-        updates: dict[str, str] = {}
-        for col in RESULT_COLS:
-            updates[col] = ""
-
+        updates: dict[str, str] = {col: "" for col in RESULT_COLS}
         updates["오류"] = result["error"] or ""
 
         sec_map = {sec["name"]: sec for sec in result.get("sections", [])}
@@ -620,7 +537,7 @@ class CompetitorSheetsSession:
     def flush(self):
         if not self._pending:
             return
-        _sheets_api_call(self._ws.batch_update, copy.deepcopy(self._pending), value_input_option="RAW")
+        _sh(self._ws.batch_update, copy.deepcopy(self._pending), value_input_option="RAW")
         self._pending = []
         self._staged_count = 0
 

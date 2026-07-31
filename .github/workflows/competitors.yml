@@ -54,7 +54,13 @@ jobs:
           import json, os, sys
           from datetime import datetime, timezone, timedelta
           sys.path.insert(0, ".")
-          from competitors import create_competitor_sheet
+          from sheets_io import create_competitor_sheet
+
+          TRACKED = ["네이버 클립", "뉴스", "인기글", "이미지", "웹문서 1", "웹문서 2", "플레이스"]
+          result_cols = ["처리완료"]
+          for s in TRACKED:
+              result_cols += [f"{s} 대륜", f"{s} 1위", f"{s} 2위", f"{s} 3위"]
+          result_cols.append("오류")
 
           KST = timezone(timedelta(hours=9))
           now = datetime.now(KST)
@@ -64,6 +70,7 @@ jobs:
               os.environ["SPREADSHEET_ID"],
               int(os.environ["SOURCE_GID"]),
               sheet_name,
+              result_cols,
           )
 
           max_kw = os.environ.get("MAX_KEYWORDS", "").strip()
