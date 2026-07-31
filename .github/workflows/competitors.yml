@@ -104,10 +104,10 @@ jobs:
       - name: 경쟁사 검색 실행
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          RESULT_GID: ${{ needs.prepare.outputs.gid }}
+          SOURCE_GID: ${{ needs.prepare.outputs.source_gid }}
+          TOTAL: ${{ needs.prepare.outputs.total }}
         run: |
-          python competitors.py \
-            --sheets-id ${{ env.SPREADSHEET_ID }} \
-            --sheet-gid ${{ needs.prepare.outputs.gid }} \
-            --source-gid ${{ needs.prepare.outputs.source_gid }} \
-            --count ${{ needs.prepare.outputs.total }} \
-            --headless
+          args="--sheets-id ${{ env.SPREADSHEET_ID }} --sheet-gid $RESULT_GID --count $TOTAL --headless"
+          [ -n "$SOURCE_GID" ] && args="$args --source-gid $SOURCE_GID"
+          python competitors.py $args
