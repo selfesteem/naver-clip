@@ -27,6 +27,7 @@ BATCH_SIZE = 50
 BATCH_BREAK_MIN = 15
 BATCH_BREAK_MAX = 30
 CONTEXT_RESET_EVERY = 200
+NUM_WORKERS = 10
 
 TRACKED_SECTIONS = [
     "네이버 클립", "뉴스", "인기글", "이미지", "웹문서 1", "웹문서 2", "플레이스",
@@ -363,8 +364,56 @@ async def make_context(browser):
     return ctx
 
 
+async def _worker_excel(worker_id: int, browser, queue: asyncio.Queue,
+                        df, lock: asyncio.Lock, output_path,
+                        counter: dict, total: int, already_done: int):
+    await asyncio.sleep(worker_id * random.uniform(0.3, 0.7))
+    context = await make_context(browser)
+    page = await context.new_page()
+    local_count = 0
+
+    while True:
+        try:
+            kw = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+        async with lock:
+            counter["n"] += 1
+            overall = already_done + counter["n"]
+
+        print(f"[{overall:>5}/{total}] W{worker_id} {kw!r} ...", end=" ", flush=True)
+
+        result = await search_competitors(page, kw)
+
+        async with lock:
+            mark_result(df, result)
+            save_dataframe(df, output_path)
+
+        if result["error"]:
+            print(f"오류: {result['error']}")
+        else:
+            print(_brief(result["sections"]))
+
+        local_count += 1
+
+        if local_count % BATCH_SIZE == 0:
+            pause = random.uniform(BATCH_BREAK_MIN, BATCH_BREAK_MAX)
+            print(f"\n  [W{worker_id}] {BATCH_SIZE}개 완료 — {pause:.0f}초 휴식...\n")
+            await asyncio.sleep(pause)
+            if local_count % CONTEXT_RESET_EVERY == 0:
+                await context.close()
+                context = await make_context(browser)
+                page = await context.new_page()
+        else:
+            await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+
+    await context.close()
+
+
 async def run(input_file: str, col: str | None, headless: bool,
-              start: int, count: int | None, output_dir: str | None):
+              start: int, count: int | None, output_dir: str | None,
+              workers: int = NUM_WORKERS):
 
     keywords = load_keywords(input_file, col, start, count)
     if not keywords:
@@ -390,42 +439,27 @@ async def run(input_file: str, col: str | None, headless: bool,
         print("모든 키워드가 처리되었습니다.")
         return
 
-    print(f"총 {actual_count}개 키워드 | 처리 예정: {len(pending)}개")
-    eta = len(pending) * ((DELAY_MIN + DELAY_MAX) / 2)
+    actual_workers = min(workers, len(pending))
+    print(f"총 {actual_count}개 키워드 | 처리 예정: {len(pending)}개 | 워커: {actual_workers}개")
+    eta = len(pending) * ((DELAY_MIN + DELAY_MAX) / 2) / actual_workers
     print(f"예상 소요 시간: 약 {int(eta // 3600)}시간 {int((eta % 3600) // 60)}분\n")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
-        context = await make_context(browser)
-        page = await context.new_page()
+        queue: asyncio.Queue = asyncio.Queue()
+        for kw in pending:
+            queue.put_nowait(kw)
 
-        for idx, kw in enumerate(pending):
-            overall = already_done + idx + 1
-            print(f"[{overall:>5}/{actual_count}] {kw!r} ...", end=" ", flush=True)
+        lock = asyncio.Lock()
+        counter = {"n": 0}
 
-            result = await search_competitors(page, kw)
-            mark_result(df, result)
-            save_dataframe(df, output_path)
-
-            if result["error"]:
-                print(f"오류: {result['error']}")
-            else:
-                print(_brief(result["sections"]))
-
-            if idx == len(pending) - 1:
-                break
-
-            if (idx + 1) % BATCH_SIZE == 0:
-                pause = random.uniform(BATCH_BREAK_MIN, BATCH_BREAK_MAX)
-                print(f"\n  {BATCH_SIZE}개 완료 — {pause:.0f}초 휴식...\n")
-                await asyncio.sleep(pause)
-                if (idx + 1) % CONTEXT_RESET_EVERY == 0:
-                    await context.close()
-                    context = await make_context(browser)
-                    page = await context.new_page()
-            else:
-                await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-
+        tasks = [
+            asyncio.create_task(
+                _worker_excel(i, browser, queue, df, lock, output_path, counter, actual_count, already_done)
+            )
+            for i in range(actual_workers)
+        ]
+        await asyncio.gather(*tasks)
         await browser.close()
 
     done_df = df[df["처리완료"] == "Y"]
@@ -542,8 +576,56 @@ class CompetitorSheetsSession:
         self._staged_count = 0
 
 
+async def _worker_sheets(worker_id: int, browser, queue: asyncio.Queue,
+                         session, lock: asyncio.Lock, counter: dict, total: int):
+    await asyncio.sleep(worker_id * random.uniform(0.3, 0.7))
+    context = await make_context(browser)
+    page = await context.new_page()
+    local_count = 0
+
+    while True:
+        try:
+            kw, row_idx = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+        async with lock:
+            counter["n"] += 1
+            overall = counter["n"]
+
+        print(f"[{overall:>5}/{total}] W{worker_id} {kw!r} ...", end=" ", flush=True)
+
+        result = await search_competitors(page, kw)
+
+        async with lock:
+            session.stage_result(row_idx, result)
+
+        if result["error"]:
+            print(f"오류: {result['error']}")
+        else:
+            print(_brief(result["sections"]))
+
+        local_count += 1
+
+        if local_count % BATCH_SIZE == 0:
+            async with lock:
+                session.flush()
+            pause = random.uniform(BATCH_BREAK_MIN, BATCH_BREAK_MAX)
+            print(f"\n  [W{worker_id}] {BATCH_SIZE}개 완료 — {pause:.0f}초 휴식...\n")
+            await asyncio.sleep(pause)
+            if local_count % CONTEXT_RESET_EVERY == 0:
+                await context.close()
+                context = await make_context(browser)
+                page = await context.new_page()
+        else:
+            await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+
+    await context.close()
+
+
 async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
-                     start: int, count: int | None, source_gid: int | None = None):
+                     start: int, count: int | None, source_gid: int | None = None,
+                     workers: int = NUM_WORKERS):
     session = CompetitorSheetsSession(spreadsheet_id, gid, source_gid=source_gid)
     keywords, row_indices = session.read_keywords(start, count)
 
@@ -552,41 +634,27 @@ async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
         return
 
     total = len(keywords)
-    print(f"Google Sheets 모드 | 처리 예정: {total}개 (start={start})")
-    eta = total * ((DELAY_MIN + DELAY_MAX) / 2)
+    actual_workers = min(workers, total)
+    print(f"Google Sheets 모드 | 처리 예정: {total}개 (start={start}) | 워커: {actual_workers}개")
+    eta = total * ((DELAY_MIN + DELAY_MAX) / 2) / actual_workers
     print(f"예상 소요 시간: 약 {int(eta // 3600)}시간 {int((eta % 3600) // 60)}분\n")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
-        context = await make_context(browser)
-        page = await context.new_page()
+        queue: asyncio.Queue = asyncio.Queue()
+        for kw, row_idx in zip(keywords, row_indices):
+            queue.put_nowait((kw, row_idx))
 
-        for idx, (kw, row_idx) in enumerate(zip(keywords, row_indices)):
-            print(f"[{idx + 1:>5}/{total}]", end=" ", flush=True)
+        lock = asyncio.Lock()
+        counter = {"n": 0}
 
-            result = await search_competitors(page, kw)
-            session.stage_result(row_idx, result)
-
-            if result["error"]:
-                print(f"오류: {result['error']}")
-            else:
-                print(_brief(result["sections"]))
-
-            if idx == total - 1:
-                break
-
-            if (idx + 1) % BATCH_SIZE == 0:
-                session.flush()
-                pause = random.uniform(BATCH_BREAK_MIN, BATCH_BREAK_MAX)
-                print(f"\n  {BATCH_SIZE}개 완료 — {pause:.0f}초 휴식...\n")
-                await asyncio.sleep(pause)
-                if (idx + 1) % CONTEXT_RESET_EVERY == 0:
-                    await context.close()
-                    context = await make_context(browser)
-                    page = await context.new_page()
-            else:
-                await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-
+        tasks = [
+            asyncio.create_task(
+                _worker_sheets(i, browser, queue, session, lock, counter, total)
+            )
+            for i in range(actual_workers)
+        ]
+        await asyncio.gather(*tasks)
         await browser.close()
 
     session.flush()
@@ -605,14 +673,16 @@ def main():
     parser.add_argument("--sheets-id", help="Google Spreadsheet ID")
     parser.add_argument("--sheet-gid", type=int, default=0, help="결과 시트 GID")
     parser.add_argument("--source-gid", type=int, default=None, help="키워드 소스 시트 GID")
+    parser.add_argument("--workers", type=int, default=NUM_WORKERS, help=f"동시 실행 워커 수 (기본: {NUM_WORKERS})")
     args = parser.parse_args()
 
     if args.sheets_id:
         asyncio.run(run_sheets(args.sheets_id, args.sheet_gid, args.headless,
-                               args.start, args.count, source_gid=args.source_gid))
+                               args.start, args.count, source_gid=args.source_gid,
+                               workers=args.workers))
     elif args.input_file:
         asyncio.run(run(args.input_file, args.col, args.headless,
-                        args.start, args.count, args.output_dir))
+                        args.start, args.count, args.output_dir, workers=args.workers))
     else:
         parser.print_help()
 
