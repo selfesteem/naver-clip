@@ -1,0 +1,153 @@
+name: 블로그 섹션 순위 검색
+
+on:
+  workflow_dispatch:
+    inputs:
+      sheet_name:
+        description: '시트 탭 이름 (비워두면 자동: YYYYMMDD_블로그순위)'
+        default: ''
+        required: false
+      source_gid:
+        description: '키워드+아이디 소스 시트 GID (비워두면 secrets.SOURCE_GID)'
+        default: ''
+        required: false
+      max_keywords:
+        description: '처리할 최대 키워드 수 (테스트용, 비워두면 전체)'
+        default: ''
+        required: false
+
+concurrency:
+  group: naver-clip-blog-rank
+  cancel-in-progress: true
+
+env:
+  SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+
+jobs:
+  # ── 1단계: 결과 시트 생성 ────────────────────────────────────────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      gid: ${{ steps.setup.outputs.gid }}
+      source_gid: ${{ steps.setup.outputs.source_gid }}
+      total: ${{ steps.setup.outputs.total }}
+      job_count: ${{ steps.setup.outputs.job_count }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: pip install gspread google-auth
+
+      - name: 시트 생성
+        id: setup
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SOURCE_GID: ${{ secrets.SOURCE_GID }}
+          MANUAL_SHEET_NAME: ${{ inputs.sheet_name || '' }}
+          INPUT_SOURCE_GID: ${{ inputs.source_gid || '' }}
+          MAX_KEYWORDS: ${{ inputs.max_keywords || '' }}
+        run: |
+          python - <<'EOF'
+          import os, sys
+          from datetime import datetime, timezone, timedelta
+          sys.path.insert(0, ".")
+          from sheets_io import create_blog_rank_sheet
+
+          TRACKED = ["블로그", "인플루언서", "인기글", "웹문서 1", "웹문서 2"]
+          result_cols = ["처리완료"] + TRACKED + ["기타 노출", "오류"]
+
+          KST = timezone(timedelta(hours=9))
+          now = datetime.now(KST)
+          sheet_name = os.environ.get("MANUAL_SHEET_NAME") or f"{now.strftime('%Y%m%d')}_블로그순위"
+
+          source_gid = os.environ.get("INPUT_SOURCE_GID", "").strip() or os.environ["SOURCE_GID"]
+
+          new_gid, total = create_blog_rank_sheet(
+              os.environ["SPREADSHEET_ID"],
+              int(source_gid),
+              sheet_name,
+              result_cols,
+          )
+
+          max_kw = os.environ.get("MAX_KEYWORDS", "").strip()
+          if max_kw:
+              total = min(total, int(max_kw))
+              job_count = 1
+              print(f"테스트 모드: 상위 {total}개만 처리 (job 1개)")
+          else:
+              job_count = 10
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"gid={new_gid}\nsource_gid={source_gid}\ntotal={total}\njob_count={job_count}\n")
+
+          print(f"→ 시트: '{sheet_name}', GID={new_gid}, 키워드 {total}개, job {job_count}개")
+          EOF
+
+  # ── 2단계: 검색 실행 (병렬 matrix) ──────────────────────────────────────────
+  search:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        job_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: Playwright 브라우저 설치
+        run: playwright install chromium --with-deps
+
+      - name: 범위 계산
+        id: range
+        env:
+          JOB_INDEX: ${{ matrix.job_index }}
+          JOB_COUNT: ${{ needs.prepare.outputs.job_count }}
+          TOTAL: ${{ needs.prepare.outputs.total }}
+        run: |
+          python - <<'EOF'
+          import math, os
+
+          total     = int(os.environ["TOTAL"])
+          job_count = int(os.environ["JOB_COUNT"])
+          job_index = int(os.environ["JOB_INDEX"])
+
+          if total == 0 or job_index >= job_count:
+              skip, start, count = "true", 0, 0
+          else:
+              chunk = math.ceil(total / job_count)
+              start = job_index * chunk
+              if start >= total:
+                  skip, count = "true", 0
+              else:
+                  count = min(chunk, total - start)
+                  skip  = "false"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"skip={skip}\nstart={start}\ncount={count}\n")
+
+          print(f"job_index={job_index} → skip={skip}, start={start}, count={count}")
+          EOF
+
+      - name: 블로그 순위 검색 실행
+        if: steps.range.outputs.skip == 'false'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          python blog_rank.py \
+            --sheets-id ${{ env.SPREADSHEET_ID }} \
+            --sheet-gid ${{ needs.prepare.outputs.gid }} \
+            --source-gid ${{ needs.prepare.outputs.source_gid }} \
+            --start ${{ steps.range.outputs.start }} \
+            --count ${{ steps.range.outputs.count }} \
+            --headless
