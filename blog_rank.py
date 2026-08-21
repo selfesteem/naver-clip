@@ -103,6 +103,14 @@ _BLOG_RANK_JS = """
         return out;
     }
 
+    // 스크립트/빈 껍데기 항목 제외 (fsolid_list는 아이템 DIV와 <script>가 번갈아 있음)
+    function hasVisibleText(el) {
+        if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE'].includes(el.tagName)) return false;
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll('script, style').forEach(e => e.remove());
+        return (clone.textContent || '').trim().length > 0;
+    }
+
     function collectItems(el) {
         let items = unwrapLists(Array.from(el.children));
         for (let depth = 0; depth < 3 && items.length <= 2; depth++) {
@@ -112,7 +120,7 @@ _BLOG_RANK_JS = """
             if (next.length <= items.length) break;
             items = next;
         }
-        return items.filter(i => (i.textContent || '').trim().length > 0);
+        return items.filter(hasVisibleText);
     }
 
     for (const sec of namedEls) {
