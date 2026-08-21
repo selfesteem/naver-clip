@@ -143,11 +143,11 @@ jobs:
         if: steps.range.outputs.skip == 'false'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          RESULT_GID: ${{ needs.prepare.outputs.gid }}
+          SOURCE_GID: ${{ needs.prepare.outputs.source_gid }}
+          START: ${{ steps.range.outputs.start }}
+          COUNT: ${{ steps.range.outputs.count }}
         run: |
-          python blog_rank.py \
-            --sheets-id ${{ env.SPREADSHEET_ID }} \
-            --sheet-gid ${{ needs.prepare.outputs.gid }} \
-            --source-gid ${{ needs.prepare.outputs.source_gid }} \
-            --start ${{ steps.range.outputs.start }} \
-            --count ${{ steps.range.outputs.count }} \
-            --headless
+          args="--sheets-id ${{ env.SPREADSHEET_ID }} --sheet-gid $RESULT_GID --start $START --count $COUNT --headless"
+          [ -n "$SOURCE_GID" ] && args="$args --source-gid $SOURCE_GID"
+          python blog_rank.py $args

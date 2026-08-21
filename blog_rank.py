@@ -535,7 +535,8 @@ class BlogRankSheetsSession:
 async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
                      start: int, count: int | None, source_gid: int | None = None):
     """Google Sheets 모드: 소스 시트에서 읽고 결과 시트에 씀."""
-    session = BlogRankSheetsSession(spreadsheet_id, gid, source_gid=source_gid)
+    # source_gid 비면 결과 시트 자체에서 읽음 (create_blog_rank_sheet가 키워드/아이디를 복사해 둠)
+    session = BlogRankSheetsSession(spreadsheet_id, gid, source_gid=source_gid or None)
     pairs, row_indices = session.read_pairs(start, count)
 
     if not pairs:
@@ -599,7 +600,8 @@ def main():
 
     if args.sheets_id:
         asyncio.run(run_sheets(args.sheets_id, args.sheet_gid, args.headless,
-                               args.start, args.count, source_gid=args.source_gid))
+                               args.start, args.count,
+                               source_gid=args.source_gid or None))
     elif args.input_file:
         asyncio.run(run(args.input_file, args.headless, args.start, args.count, args.output_dir))
     else:
