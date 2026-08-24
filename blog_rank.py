@@ -342,7 +342,11 @@ async def search_blog_rank(page: Page, keyword: str, blog_id: str) -> dict:
         result["sections"] = raw
 
     except Exception as e:
-        result["error"] = str(e)
+        msg = str(e)
+        for secret in (keyword, blog_id, quote(keyword)):
+            if secret and secret in msg:
+                msg = msg.replace(secret, "***")
+        result["error"] = msg
 
     return result
 
@@ -400,7 +404,7 @@ async def run(input_file: str, headless: bool, start: int,
 
         for idx, (kw, bid) in enumerate(pending):
             overall = already_done + idx + 1
-            print(f"[{overall:>5}/{actual_count}] {kw!r} @ {bid} ...", end=" ", flush=True)
+            print(f"[{overall:>5}/{actual_count}] ...", end=" ", flush=True)
 
             result = await search_blog_rank(page, kw, bid)
             mark_result(df, result)
@@ -562,7 +566,7 @@ async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
         page = await context.new_page()
 
         for idx, ((kw, bid), row_idx) in enumerate(zip(pairs, row_indices)):
-            print(f"[{idx + 1:>5}/{total}] {kw!r} @ {bid} ...", end=" ", flush=True)
+            print(f"[{idx + 1:>5}/{total}] ...", end=" ", flush=True)
 
             result = await search_blog_rank(page, kw, bid)
             session.stage_result(row_idx, result)
