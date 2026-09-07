@@ -153,6 +153,7 @@ jobs:
           job_index = int(os.environ["JOB_INDEX"])
           job_rows = config["jobs"][job_index] if job_index < len(config["jobs"]) else []
 
+          source_gid = config["source_gid"]
           if not job_rows:
               skip, row_indices_str, gid = "true", "", config["gid"]
           else:
@@ -161,7 +162,7 @@ jobs:
               gid = config["gid"]
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"skip={skip}\nrow_indices={row_indices_str}\ngid={gid}\n")
+              f.write(f"skip={skip}\nrow_indices={row_indices_str}\ngid={gid}\nsource_gid={source_gid}\n")
 
           print(f"job_index={job_index} → skip={skip}, rows={len(job_rows)}")
           EOF
@@ -171,10 +172,12 @@ jobs:
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           RESULT_GID: ${{ steps.range.outputs.gid }}
+          SOURCE_GID: ${{ steps.range.outputs.source_gid }}
           ROW_INDICES: ${{ steps.range.outputs.row_indices }}
         run: |
           python blog_exposure.py \
             --sheets-id ${{ env.SPREADSHEET_ID }} \
             --sheet-gid $RESULT_GID \
+            --source-gid $SOURCE_GID \
             --row-indices "$ROW_INDICES" \
             --headless

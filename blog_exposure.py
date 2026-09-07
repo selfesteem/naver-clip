@@ -70,7 +70,7 @@ _EXPOSURE_JS_MULTI = """
 
     const result = {};
     for (const blogId of blogIds) {
-        const re = new RegExp('blog\\\\.naver\\\\.com/' + esc(blogId) + '([/"\\'&?#=\\s]|$)', 'i');
+        const re = new RegExp(`blog\\\\.naver\\\\.com/${esc(blogId)}([/"'&?#=\\\\s]|$)`, 'i');
         result[blogId] = hrefs.some(h => re.test(h)) || re.test(bodyText);
     }
     return result;
