@@ -162,7 +162,7 @@ jobs:
               gid = config["gid"]
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"skip={skip}\nrow_indices={row_indices_str}\ngid={gid}\nsource_gid={source_gid}\n")
+              f.write(f"skip={skip}\nrow_indices={row_indices_str}\ngid={gid}\n")
 
           print(f"job_index={job_index} → skip={skip}, rows={len(job_rows)}")
           EOF
@@ -172,12 +172,12 @@ jobs:
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           RESULT_GID: ${{ steps.range.outputs.gid }}
-          SOURCE_GID: ${{ steps.range.outputs.source_gid }}
           ROW_INDICES: ${{ steps.range.outputs.row_indices }}
         run: |
+          SOURCE_GID=$(python3 -c "import json; print(json.load(open('config.json'))['source_gid'])")
           python blog_exposure.py \
             --sheets-id ${{ env.SPREADSHEET_ID }} \
             --sheet-gid $RESULT_GID \
-            --source-gid $SOURCE_GID \
+            --source-gid "$SOURCE_GID" \
             --row-indices "$ROW_INDICES" \
             --headless
