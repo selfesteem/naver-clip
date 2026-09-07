@@ -17,7 +17,6 @@ import argparse
 import os
 import sys
 import random
-from collections import defaultdict
 from datetime import date
 from pathlib import Path
 from urllib.parse import quote
@@ -357,15 +356,16 @@ class BlogExposureSheetsSession:
         src_kw_idx = next((i for i, h in enumerate(src_header) if h == "키워드"), 0)
         src_id_idx = next((i for i, h in enumerate(src_header) if h == "아이디"), 1)
 
-        kw_to_bids: dict[str, list[str]] = defaultdict(list)
+        seen_ids: set[str] = set()
+        all_blog_ids: list[str] = []
         for row in src_all[1:]:
-            kw = row[src_kw_idx].strip() if src_kw_idx < len(row) else ""
             bid = _normalize_blog_id(row[src_id_idx]) if src_id_idx < len(row) else ""
-            if kw in pending and bid:
-                kw_to_bids[kw].append(bid)
+            if bid and bid not in seen_ids:
+                seen_ids.add(bid)
+                all_blog_ids.append(bid)
 
-        keyword_to_bids = {kw: bids for kw, bids in kw_to_bids.items() if bids}
-        keyword_to_row = {kw: row_num for kw, row_num in pending.items() if kw in keyword_to_bids}
+        keyword_to_bids = {kw: all_blog_ids for kw in pending}
+        keyword_to_row = dict(pending)
         return keyword_to_bids, keyword_to_row
 
     def read_keywords_with_ids(
@@ -398,15 +398,16 @@ class BlogExposureSheetsSession:
         src_kw_idx = next((i for i, h in enumerate(src_header) if h == "키워드"), 0)
         src_id_idx = next((i for i, h in enumerate(src_header) if h == "아이디"), 1)
 
-        kw_to_bids: dict[str, list[str]] = defaultdict(list)
+        seen_ids: set[str] = set()
+        all_blog_ids: list[str] = []
         for row in src_all[1:]:
-            kw = row[src_kw_idx].strip() if src_kw_idx < len(row) else ""
             bid = _normalize_blog_id(row[src_id_idx]) if src_id_idx < len(row) else ""
-            if kw in pending and bid:
-                kw_to_bids[kw].append(bid)
+            if bid and bid not in seen_ids:
+                seen_ids.add(bid)
+                all_blog_ids.append(bid)
 
-        keyword_to_bids = {kw: bids for kw, bids in kw_to_bids.items() if bids}
-        keyword_to_row = {kw: row_num for kw, row_num in pending.items() if kw in keyword_to_bids}
+        keyword_to_bids = {kw: all_blog_ids for kw in pending}
+        keyword_to_row = dict(pending)
         return keyword_to_bids, keyword_to_row
 
     def stage_keyword_result(self, row_idx: int, exposed: bool | None, error: str | None):
