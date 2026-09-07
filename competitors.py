@@ -29,6 +29,15 @@ BATCH_BREAK_MAX = 30
 CONTEXT_RESET_EVERY = 200
 NUM_WORKERS = 10
 
+
+def _mask_for_ci(*values: str):
+    """GitHub Actions 로그에서 값을 마스킹 (CI 환경에서만 동작)."""
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    for v in values:
+        if v:
+            print(f"::add-mask::{v}", flush=True)
+
 TRACKED_SECTIONS = [
     "네이버 클립", "뉴스", "인기글", "이미지", "웹문서 1", "웹문서 2", "플레이스",
 ]
@@ -383,7 +392,7 @@ async def _worker_excel(worker_id: int, browser, queue: asyncio.Queue,
                 counter["n"] += 1
                 overall = already_done + counter["n"]
 
-            print(f"[{overall:>5}/{total}] W{worker_id} {kw!r} ...", end=" ", flush=True)
+            print(f"[{overall:>5}/{total}] W{worker_id} ...", end=" ", flush=True)
 
             try:
                 result = await search_competitors(page, kw)
@@ -420,6 +429,9 @@ async def run(input_file: str, col: str | None, headless: bool,
     keywords = load_keywords(input_file, col, start, count)
     if not keywords:
         sys.exit(f"범위(start={start})에 해당하는 키워드가 없습니다.")
+
+    for kw in keywords:
+        _mask_for_ci(kw)
 
     today = date.today().strftime("%Y%m%d")
     actual_count = len(keywords)
@@ -611,7 +623,7 @@ async def _worker_sheets(worker_id: int, browser, queue: asyncio.Queue,
                 counter["n"] += 1
                 overall = counter["n"]
 
-            print(f"[{overall:>5}/{total}] W{worker_id} {kw!r} ...", end=" ", flush=True)
+            print(f"[{overall:>5}/{total}] W{worker_id} ...", end=" ", flush=True)
 
             try:
                 result = await search_competitors(page, kw)
@@ -650,6 +662,9 @@ async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
                      workers: int = NUM_WORKERS):
     session = CompetitorSheetsSession(spreadsheet_id, gid, source_gid=source_gid)
     keywords, row_indices = session.read_keywords(start, count)
+
+    for kw in keywords:
+        _mask_for_ci(kw)
 
     if not keywords:
         print(f"범위(start={start})에 처리할 키워드가 없습니다.")

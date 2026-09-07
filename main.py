@@ -16,6 +16,7 @@
 
 import asyncio
 import argparse
+import os
 import sys
 import random
 from datetime import date
@@ -29,6 +30,15 @@ from sheets_io import SheetsSession
 
 DELAY_MIN = 2.0
 DELAY_MAX = 5.0
+
+
+def _mask_for_ci(*values: str):
+    """GitHub Actions 로그에서 값을 마스킹 (CI 환경에서만 동작)."""
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    for v in values:
+        if v:
+            print(f"::add-mask::{v}", flush=True)
 BATCH_SIZE = 50
 BATCH_BREAK_MIN = 15
 BATCH_BREAK_MAX = 30
@@ -170,6 +180,9 @@ async def run(input_file: str, col: str | None, headless: bool,
     if not keywords:
         sys.exit(f"범위(start={start})에 해당하는 키워드가 없습니다.")
 
+    for kw in keywords:
+        _mask_for_ci(kw)
+
     today = date.today().strftime("%Y%m%d")
     actual_count = len(keywords)
     out_dir = Path(output_dir) if output_dir else Path(input_file).parent
@@ -201,7 +214,7 @@ async def run(input_file: str, col: str | None, headless: bool,
 
         for idx, kw in enumerate(pending):
             overall = already_done + idx + 1
-            print(f"[{overall:>5}/{actual_count}] {kw!r} ...", end=" ", flush=True)
+            print(f"[{overall:>5}/{actual_count}] ...", end=" ", flush=True)
 
             result = await search_all_sections(page, kw)
             mark_result(df, result)
@@ -242,6 +255,9 @@ async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
     """Google Sheets 모드: 소스 시트에서 읽고 결과 시트에 씀."""
     session = SheetsSession(spreadsheet_id, gid, source_gid=source_gid)
     keywords, row_indices = session.read_keywords(start, count)
+
+    for kw in keywords:
+        _mask_for_ci(kw)
 
     if not keywords:
         print(f"범위(start={start})에 처리할 키워드가 없습니다.")

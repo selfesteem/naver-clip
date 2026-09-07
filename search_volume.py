@@ -39,6 +39,15 @@ REQUEST_DELAY = 0.5
 PROGRESS_EVERY = 100
 
 
+def _mask_for_ci(*values: str):
+    """GitHub Actions 로그에서 값을 마스킹 (CI 환경에서만 동작)."""
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    for v in values:
+        if v:
+            print(f"::add-mask::{v}", flush=True)
+
+
 # ── 인증 ──────────────────────────────────────────────────────────────────────
 
 def _sign(secret_key: str, timestamp: str, method: str, path: str) -> str:
@@ -67,7 +76,7 @@ def _fetch_single(kw: str, api_key: str, secret_key: str, customer_id: str) -> l
     url = f"{API_BASE}{KEYWORD_TOOL_PATH}?hintKeywords={hint}&showDetail=1"
     r = requests.get(url, headers=headers, timeout=15)
     if not r.ok:
-        print(f"  [스킵] '{kw}' — {r.status_code}: {r.text[:100]}")
+        print(f"  [스킵] — {r.status_code}: {r.text[:100]}")
         return []
     return r.json().get("keywordList", [])
 
@@ -370,6 +379,9 @@ def main():
     keywords = load_keywords(args.input_file, args.col)
     if not keywords:
         sys.exit("키워드가 없습니다.")
+
+    for kw in keywords:
+        _mask_for_ci(kw)
 
     today = date.today().strftime("%Y%m%d")
     input_path = Path(args.input_file)
