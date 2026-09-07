@@ -70,7 +70,7 @@ _EXPOSURE_JS_MULTI = """
 
     const result = {};
     for (const blogId of blogIds) {
-        const re = new RegExp('blog\\.naver\\.com/' + esc(blogId) + '([/"\'&?#=\\\\s]|$)', 'i');
+        const re = new RegExp('blog\\\\.naver\\\\.com/' + esc(blogId) + '([/"\\'&?#=\\s]|$)', 'i');
         result[blogId] = hrefs.some(h => re.test(h)) || re.test(bodyText);
     }
     return result;
@@ -287,7 +287,7 @@ async def run(input_file: str, headless: bool, start: int,
 
 # ── Google Sheets 지원 ────────────────────────────────────────────────────────
 
-from sheets_io import _api_call as _sh, _get_client as _sh_client  # noqa: E402
+from sheets_io import _api_call as _sh, _get_client as _sh_client, create_keyword_exposure_sheet as _create_sheet  # noqa: E402
 
 
 class BlogExposureSheetsSession:
@@ -319,77 +319,104 @@ class BlogExposureSheetsSession:
         self._pending: list[dict] = []
         self._staged_count = 0
 
-    def read_pairs(self, start: int, count: int | None) -> tuple[list[tuple[str, str]], list[int]]:
-        """지정 범위에서 미완료 (키워드, 아이디) 쌍만 읽기."""
+    def read_keywords_by_indices(
+        self, row_indices: list[int]
+    ) -> tuple[dict[str, list[str]], dict[str, int]]:
+        """
+        result 시트의 지정 행에서 미완료 키워드를 읽고,
+        source 시트에서 각 키워드의 블로그 아이디 목록을 가져옴.
+
+        Returns:
+          keyword_to_bids: {keyword: [blog_id, ...]}
+          keyword_to_row:  {keyword: result_sheet_row_number}
+        """
+        result_all = _sh(self._ws.get_all_values)
+        result_header = result_all[0] if result_all else []
+        kw_col = next((i for i, h in enumerate(result_header) if h == "키워드"), 0)
+        done_col = self._header_map.get("처리완료")
+
+        pending: dict[str, int] = {}
+        for row_num in row_indices:
+            idx = row_num - 1
+            if idx <= 0 or idx >= len(result_all):
+                continue
+            row = result_all[idx]
+            kw = row[kw_col].strip() if kw_col < len(row) else ""
+            if not kw:
+                continue
+            done_val = row[done_col - 1].strip() if done_col and (done_col - 1) < len(row) else ""
+            if done_val == "Y":
+                continue
+            pending[kw] = row_num
+
+        if not pending:
+            return {}, {}
+
         src_all = _sh(self._source_ws.get_all_values)
-        if len(src_all) < 2:
-            return [], []
-        src_header = src_all[0]
-        kw_idx = next((i for i, h in enumerate(src_header) if h == "키워드"), 0)
-        id_idx = next((i for i, h in enumerate(src_header) if h == "아이디"), 1)
-        data_rows = src_all[1:]
+        src_header = src_all[0] if src_all else []
+        src_kw_idx = next((i for i, h in enumerate(src_header) if h == "키워드"), 0)
+        src_id_idx = next((i for i, h in enumerate(src_header) if h == "아이디"), 1)
+
+        kw_to_bids: dict[str, list[str]] = defaultdict(list)
+        for row in src_all[1:]:
+            kw = row[src_kw_idx].strip() if src_kw_idx < len(row) else ""
+            bid = _normalize_blog_id(row[src_id_idx]) if src_id_idx < len(row) else ""
+            if kw in pending and bid:
+                kw_to_bids[kw].append(bid)
+
+        keyword_to_bids = {kw: bids for kw, bids in kw_to_bids.items() if bids}
+        keyword_to_row = {kw: row_num for kw, row_num in pending.items() if kw in keyword_to_bids}
+        return keyword_to_bids, keyword_to_row
+
+    def read_keywords_with_ids(
+        self, start: int, count: int | None
+    ) -> tuple[dict[str, list[str]], dict[str, int]]:
+        """start/count 범위의 미완료 키워드와 블로그 아이디를 읽기 (로컬/수동 실행용)."""
+        result_all = _sh(self._ws.get_all_values)
+        if len(result_all) < 2:
+            return {}, {}
+        result_header = result_all[0]
+        kw_col = next((i for i, h in enumerate(result_header) if h == "키워드"), 0)
+        done_col = self._header_map.get("처리완료")
+        data_rows = result_all[1:]
         sliced = data_rows[start : (start + count) if count else None]
 
-        done_col = self._header_map.get("처리완료")
-        if self._separate_source:
-            result_all = _sh(self._ws.get_all_values)
-            result_data = result_all[1:] if len(result_all) > 1 else []
-        else:
-            result_data = data_rows
-
-        pairs, row_indices = [], []
+        pending: dict[str, int] = {}
         for i, row in enumerate(sliced):
-            kw = row[kw_idx].strip() if kw_idx < len(row) else ""
-            bid = _normalize_blog_id(row[id_idx]) if id_idx < len(row) else ""
-            if not kw or not bid:
+            kw = row[kw_col].strip() if kw_col < len(row) else ""
+            if not kw:
                 continue
-            done_val = ""
-            result_pos = start + i
-            if done_col and result_pos < len(result_data):
-                r = result_data[result_pos]
-                if (done_col - 1) < len(r):
-                    done_val = r[done_col - 1].strip()
-            if done_val == "Y":
-                continue
-            pairs.append((kw, bid))
-            row_indices.append(start + i + 2)
+            done_val = row[done_col - 1].strip() if done_col and (done_col - 1) < len(row) else ""
+            if done_val != "Y":
+                pending[kw] = start + i + 2
 
-        return pairs, row_indices
+        if not pending:
+            return {}, {}
 
-    def read_pairs_by_indices(self, row_indices: list[int]) -> tuple[list[tuple[str, str]], list[int]]:
-        """지정된 시트 행 번호(1-based)의 미완료 쌍만 읽기."""
-        all_vals = _sh(self._ws.get_all_values)
-        if len(all_vals) < 2:
-            return [], []
-        header = all_vals[0]
-        kw_idx = next((i for i, h in enumerate(header) if h == "키워드"), 0)
-        id_idx = next((i for i, h in enumerate(header) if h == "아이디"), 1)
-        done_col = self._header_map.get("처리완료")
+        src_all = _sh(self._source_ws.get_all_values)
+        src_header = src_all[0] if src_all else []
+        src_kw_idx = next((i for i, h in enumerate(src_header) if h == "키워드"), 0)
+        src_id_idx = next((i for i, h in enumerate(src_header) if h == "아이디"), 1)
 
-        pairs, out_indices = [], []
-        for row_num in row_indices:
-            sheet_idx = row_num - 1  # 0-based into all_vals
-            if sheet_idx <= 0 or sheet_idx >= len(all_vals):
-                continue
-            row = all_vals[sheet_idx]
-            kw = row[kw_idx].strip() if kw_idx < len(row) else ""
-            bid = _normalize_blog_id(row[id_idx]) if id_idx < len(row) else ""
-            if not kw or not bid:
-                continue
-            done_val = ""
-            if done_col and (done_col - 1) < len(row):
-                done_val = row[done_col - 1].strip()
-            if done_val == "Y":
-                continue
-            pairs.append((kw, bid))
-            out_indices.append(row_num)
+        kw_to_bids: dict[str, list[str]] = defaultdict(list)
+        for row in src_all[1:]:
+            kw = row[src_kw_idx].strip() if src_kw_idx < len(row) else ""
+            bid = _normalize_blog_id(row[src_id_idx]) if src_id_idx < len(row) else ""
+            if kw in pending and bid:
+                kw_to_bids[kw].append(bid)
 
-        return pairs, out_indices
+        keyword_to_bids = {kw: bids for kw, bids in kw_to_bids.items() if bids}
+        keyword_to_row = {kw: row_num for kw, row_num in pending.items() if kw in keyword_to_bids}
+        return keyword_to_bids, keyword_to_row
 
-    def stage_result(self, row_idx: int, keyword: str, blog_id: str,
-                     exposed: bool | None, error: str | None):
-        """결과 한 건을 버퍼에 추가. FLUSH_EVERY에 도달하면 자동 flush."""
-        for col_name, value in _build_update(keyword, blog_id, exposed, error).items():
+    def stage_keyword_result(self, row_idx: int, exposed: bool | None, error: str | None):
+        """키워드 1건의 결과를 버퍼에 추가. FLUSH_EVERY에 도달하면 자동 flush."""
+        update = {
+            "처리완료": "Y",
+            "노출여부": "O" if exposed else ("X" if exposed is not None else ""),
+            "오류": error or "",
+        }
+        for col_name, value in update.items():
             if col_name in self._header_map:
                 self._pending.append({
                     "range": self._rowcol_to_a1(row_idx, self._header_map[col_name]),
@@ -424,29 +451,23 @@ async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
                      start: int, count: int | None,
                      source_gid: int | None = None,
                      row_indices: list[int] | None = None):
-    """Google Sheets 모드: 소스 시트에서 읽고 결과 시트에 씀."""
+    """Google Sheets 모드: 소스 시트에서 블로그 아이디 읽고, 결과 시트에 키워드별 O/X 씀."""
     session = BlogExposureSheetsSession(spreadsheet_id, gid, source_gid=source_gid or None)
 
     if row_indices is not None:
-        pairs, pair_row_indices = session.read_pairs_by_indices(row_indices)
+        kw_to_bids, kw_to_row = session.read_keywords_by_indices(row_indices)
     else:
-        pairs, pair_row_indices = session.read_pairs(start, count)
+        kw_to_bids, kw_to_row = session.read_keywords_with_ids(start, count)
 
-    for kw, bid in pairs:
-        _mask_for_ci(kw, bid)
+    for kw, bids in kw_to_bids.items():
+        _mask_for_ci(kw, *bids)
 
-    if not pairs:
-        print("처리할 키워드/아이디 쌍이 없습니다.")
+    if not kw_to_bids:
+        print("처리할 키워드가 없습니다.")
         return
 
-    # 같은 키워드는 한 번만 검색, row_index 정보도 함께 유지
-    keyword_groups: dict[str, list[tuple[str, int]]] = defaultdict(list)
-    for (kw, bid), row_idx in zip(pairs, pair_row_indices):
-        keyword_groups[kw].append((bid, row_idx))
-
-    unique_kw = len(keyword_groups)
-    total_pairs = len(pairs)
-    print(f"Google Sheets 모드 | 처리 예정: {total_pairs}쌍 ({unique_kw}개 키워드)")
+    unique_kw = len(kw_to_bids)
+    print(f"Google Sheets 모드 | 처리 예정: {unique_kw}개 키워드")
     eta = unique_kw * ((DELAY_MIN + DELAY_MAX) / 2)
     print(f"예상 소요 시간: 약 {int(eta // 3600)}시간 {int((eta % 3600) // 60)}분\n")
 
@@ -455,21 +476,18 @@ async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
         context = await make_context(browser)
         page = await context.new_page()
 
-        for kw_idx, (kw, bid_rows) in enumerate(keyword_groups.items()):
-            blog_ids = [bid for bid, _ in bid_rows]
+        for kw_idx, (kw, blog_ids) in enumerate(kw_to_bids.items()):
+            row_idx = kw_to_row[kw]
             print(f"[{kw_idx + 1:>5}/{unique_kw}] ({len(blog_ids)}개) ...", end=" ", flush=True)
 
             result = await search_keyword_exposure(page, kw, blog_ids)
-
-            for bid, row_idx in bid_rows:
-                exposed = result["exposures"].get(bid)
-                session.stage_result(row_idx, kw, bid, exposed, result["error"])
+            exposed = any(result["exposures"].values()) if result["exposures"] else False
+            session.stage_keyword_result(row_idx, exposed, result["error"])
 
             if result["error"]:
                 print(f"오류: {result['error']}")
             else:
-                summary = " ".join("O" if result["exposures"].get(b) else "X" for b in blog_ids)
-                print(summary)
+                print("O" if exposed else "X")
 
             if kw_idx == unique_kw - 1:
                 break
@@ -489,7 +507,7 @@ async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
         await browser.close()
 
     session.flush()
-    print(f"\n완료: {total_pairs}쌍 처리 → 구글 시트에 저장됨")
+    print(f"\n완료: {unique_kw}개 키워드 처리 → 구글 시트에 저장됨")
 
 
 def main():

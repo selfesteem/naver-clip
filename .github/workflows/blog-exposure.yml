@@ -47,10 +47,9 @@ jobs:
         run: |
           python - <<'EOF'
           import os, sys, math, json
-          from collections import defaultdict
           from datetime import datetime, timezone, timedelta
           sys.path.insert(0, ".")
-          from sheets_io import create_blog_rank_sheet, _get_client, _api_call
+          from sheets_io import create_keyword_exposure_sheet, _get_client, _api_call
 
           result_cols = ["처리완료", "노출여부", "오류"]
 
@@ -61,51 +60,42 @@ jobs:
           source_gid = os.environ.get("INPUT_SOURCE_GID", "").strip() or os.environ["SOURCE_GID"]
           spreadsheet_id = os.environ["SPREADSHEET_ID"]
 
-          new_gid, total = create_blog_rank_sheet(
+          new_gid, total = create_keyword_exposure_sheet(
               spreadsheet_id,
               int(source_gid),
               sheet_name,
               result_cols,
           )
 
-          # 결과 시트에서 미완료 행을 키워드 기준으로 묶어 워커 배분
+          # 결과 시트에서 미완료 행 목록 수집 (1 행 = 1 키워드)
           client = _get_client()
           ss = client.open_by_key(spreadsheet_id)
           ws = next(w for w in _api_call(ss.worksheets) if w.id == new_gid)
           all_vals = _api_call(ws.get_all_values)
 
           header = all_vals[0] if all_vals else []
-          kw_idx = next((i for i, h in enumerate(header) if h == "키워드"), 0)
           done_col_idx = next((i for i, h in enumerate(header) if h == "처리완료"), None)
           data_rows = all_vals[1:] if len(all_vals) > 1 else []
 
           max_kw = os.environ.get("MAX_KEYWORDS", "").strip()
 
-          # 미완료 행을 키워드별로 그룹핑 (순서 유지)
-          pending_by_kw = defaultdict(list)
+          pending_rows = []
           for i, row in enumerate(data_rows):
               if not row or not row[0].strip():
                   continue
               done_val = row[done_col_idx].strip() if done_col_idx is not None and done_col_idx < len(row) else ""
               if done_val == "Y":
                   continue
-              kw = row[kw_idx].strip()
-              pending_by_kw[kw].append(i + 2)  # 1-based 행 번호 (헤더=1)
+              pending_rows.append(i + 2)  # 1-based 행 번호 (헤더=1)
 
-          keywords = list(pending_by_kw.keys())
           if max_kw:
-              keywords = keywords[:int(max_kw)]
+              pending_rows = pending_rows[:int(max_kw)]
 
-          # 키워드를 10개 워커에 균등 배분 (같은 키워드의 아이디는 같은 워커)
+          # 행을 10개 워커에 균등 배분
           JOB_COUNT = 10
-          chunk = math.ceil(len(keywords) / JOB_COUNT) if keywords else 0
-          jobs = []
-          for j in range(JOB_COUNT):
-              job_kws = keywords[j * chunk : (j + 1) * chunk] if chunk else []
-              job_rows = [r for kw in job_kws for r in pending_by_kw[kw]]
-              jobs.append(job_rows)
+          chunk = math.ceil(len(pending_rows) / JOB_COUNT) if pending_rows else 0
+          jobs = [pending_rows[j * chunk : (j + 1) * chunk] if chunk else [] for j in range(JOB_COUNT)]
 
-          pending_pairs = sum(len(v) for v in pending_by_kw.values() if pending_by_kw)
           config = {
               "gid": new_gid,
               "source_gid": int(source_gid),
@@ -115,7 +105,7 @@ jobs:
           with open("config.json", "w") as f:
               json.dump(config, f)
 
-          print(f"→ 시트: '{sheet_name}', GID={new_gid}, 전체 {total}쌍, 미완료 {len(keywords)}키워드/{pending_pairs}쌍")
+          print(f"→ 시트: '{sheet_name}', GID={new_gid}, 전체 {total}키워드, 미완료 {len(pending_rows)}키워드")
           EOF
 
       # artifact로 전달 (job output은 secret masking 대상이라 GID가 *** 로 치환될 수 있음)

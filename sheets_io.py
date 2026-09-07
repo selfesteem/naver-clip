@@ -216,6 +216,71 @@ def create_blog_rank_sheet(
     return target_ws.id, len(pairs)
 
 
+def create_keyword_exposure_sheet(
+    spreadsheet_id: str,
+    source_gid: int,
+    sheet_name: str,
+    result_cols: list[str],
+) -> tuple[int, int]:
+    """
+    노출여부 결과 시트 생성. 소스 시트의 유니크 키워드만 1행씩 복사.
+    블로그 아이디 컬럼 없음 — 키워드 단위로 O/X만 기록.
+
+    Returns: (result_sheet_gid, unique_keyword_count)
+    """
+    client = _get_client()
+    ss = client.open_by_key(spreadsheet_id)
+    ws_list = _api_call(ss.worksheets)
+    ws_by_id = {ws.id: ws for ws in ws_list}
+    ws_by_title = {ws.title: ws for ws in ws_list}
+
+    source_ws = ws_by_id.get(source_gid)
+    if source_ws is None:
+        raise ValueError(f"원본 시트 GID={source_gid} 를 찾을 수 없습니다.")
+
+    existing_ws = ws_by_title.get(sheet_name)
+    if existing_ws is not None:
+        all_vals = _api_call(existing_ws.get_all_values)
+        total = sum(1 for row in all_vals[1:] if row and row[0].strip())
+        if total > 0:
+            print(f"기존 시트 사용: '{sheet_name}' (키워드 {total}개)")
+            return existing_ws.id, total
+
+    all_source = _api_call(source_ws.get_all_values)
+    if not all_source:
+        raise ValueError("원본 시트가 비어 있습니다.")
+
+    src_header = all_source[0]
+    kw_idx = next((i for i, h in enumerate(src_header) if h == "키워드"), 0)
+
+    seen: set[str] = set()
+    keywords: list[str] = []
+    for row in all_source[1:]:
+        kw = row[kw_idx].strip() if kw_idx < len(row) else ""
+        if kw and kw not in seen:
+            seen.add(kw)
+            keywords.append(kw)
+
+    if not keywords:
+        raise ValueError("원본 시트에 키워드가 없습니다.")
+
+    header_row = ["키워드"] + result_cols
+    if existing_ws is not None:
+        target_ws = existing_ws
+        print(f"기존 시트 재초기화: '{sheet_name}'")
+    else:
+        target_ws = _api_call(ss.add_worksheet, title=sheet_name,
+                              rows=len(keywords) + 10, cols=len(header_row))
+        print(f"새 시트 생성: '{sheet_name}' (키워드 {len(keywords)}개)")
+
+    rows = [[kw] + [""] * len(result_cols) for kw in keywords]
+    _api_call(target_ws.update, [header_row], "A1")
+    if rows:
+        _api_call(target_ws.update, rows, "A2")
+
+    return target_ws.id, len(keywords)
+
+
 class SheetsSession:
     """시트 읽기/쓰기 세션 — 헤더 캐시 + 배치 쓰기 지원."""
 
