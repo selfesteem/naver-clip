@@ -11,6 +11,7 @@
 
 import asyncio
 import argparse
+import os
 import sys
 import random
 from datetime import date
@@ -199,6 +200,15 @@ _BLOG_RANK_JS = """
 """
 
 
+def _mask_for_ci(*values: str):
+    """GitHub Actions 로그에서 값을 마스킹 (CI 환경에서만 동작)."""
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    for v in values:
+        if v:
+            print(f"::add-mask::{v}", flush=True)
+
+
 def _normalize_blog_id(raw: str) -> str:
     """'blog.naver.com/xxx/...' 형태 입력도 아이디만 남김."""
     val = raw.strip()
@@ -369,6 +379,9 @@ async def run(input_file: str, headless: bool, start: int,
     pairs = load_pairs(input_file, start, count)
     if not pairs:
         sys.exit(f"범위(start={start})에 해당하는 키워드/아이디 쌍이 없습니다.")
+
+    for kw, bid in pairs:
+        _mask_for_ci(kw, bid)
 
     today = date.today().strftime("%Y%m%d")
     actual_count = len(pairs)
@@ -550,6 +563,9 @@ async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
     # source_gid 비면 결과 시트 자체에서 읽음 (create_blog_rank_sheet가 키워드/아이디를 복사해 둠)
     session = BlogRankSheetsSession(spreadsheet_id, gid, source_gid=source_gid or None)
     pairs, row_indices = session.read_pairs(start, count)
+
+    for kw, bid in pairs:
+        _mask_for_ci(kw, bid)
 
     if not pairs:
         print(f"범위(start={start})에 처리할 키워드/아이디 쌍이 없습니다.")
