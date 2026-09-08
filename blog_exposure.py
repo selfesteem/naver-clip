@@ -17,7 +17,8 @@ import argparse
 import os
 import sys
 import random
-from datetime import date
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -286,144 +287,111 @@ async def run(input_file: str, headless: bool, start: int,
 
 # ── Google Sheets 지원 ────────────────────────────────────────────────────────
 
-from sheets_io import _api_call as _sh, _get_client as _sh_client, create_keyword_exposure_sheet as _create_sheet  # noqa: E402
+from sheets_io import _api_call as _sh, _get_client as _sh_client  # noqa: E402
+
+KST = timezone(timedelta(hours=9))
+
+
+def _parse_date(s: str) -> date | None:
+    for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(s.strip(), fmt).date()
+        except ValueError:
+            pass
+    return None
 
 
 class BlogExposureSheetsSession:
-    """Google Sheets 블로그 노출 여부 데이터 읽기/쓰기 세션."""
+    """Google Sheets 블로그 노출 여부 읽기/쓰기 세션.
+
+    시트 구조:
+      A(1)=발행일자  B(2)=메인키워드  D(4)=서브키워드  N(14)=URL
+      F(6)=당일_메인  G(7)=당일_서브
+      H(8)=다음날_메인  I(9)=다음날_서브
+      J(10)=1주일뒤_메인  K(11)=1주일뒤_서브
+    노출 시 'O' 기록, 미노출은 빈칸 유지.
+    """
 
     FLUSH_EVERY = 10
 
-    def __init__(self, spreadsheet_id: str, gid: int, source_gid: int | None = None):
+    COL_DATE = 1
+    COL_MAIN_KW = 2
+    COL_SUB_KW = 4
+    COL_URL = 14
+
+    # offset(일) → (메인결과열, 서브결과열) 1-based
+    DATE_OFFSET_COLS = {
+        0: (6, 7),    # F, G  발행당일
+        1: (8, 9),    # H, I  다음날
+        7: (10, 11),  # J, K  1주일뒤
+    }
+
+    def __init__(self, spreadsheet_id: str, gid: int):
         from gspread.utils import rowcol_to_a1
         self._rowcol_to_a1 = rowcol_to_a1
-        self._separate_source = source_gid is not None and source_gid != gid
 
         ss = _sh_client().open_by_key(spreadsheet_id)
         ws_map = {ws.id: ws for ws in _sh(ss.worksheets)}
-
         if gid not in ws_map:
             raise ValueError(f"Sheet GID={gid} 를 찾을 수 없습니다.")
         self._ws = ws_map[gid]
-
-        if self._separate_source:
-            if source_gid not in ws_map:
-                raise ValueError(f"Sheet GID={source_gid} 를 찾을 수 없습니다.")
-            self._source_ws = ws_map[source_gid]
-        else:
-            self._source_ws = self._ws
-
-        self._header: list[str] = _sh(self._ws.row_values, 1)
-        self._header_map: dict[str, int] = {n: i + 1 for i, n in enumerate(self._header)}
         self._pending: list[dict] = []
         self._staged_count = 0
 
-    def read_keywords_by_indices(
-        self, row_indices: list[int]
-    ) -> tuple[dict[str, list[str]], dict[str, int]]:
+    def read_pending_rows(self, row_indices: list[int] | None = None) -> list[dict]:
+        """오늘 날짜가 발행일+{0,1,7}인 미완료 행을 반환.
+
+        각 항목: {row_idx, main_kw, sub_kw, blog_id, main_col, sub_col, main_done, sub_done}
         """
-        result 시트의 지정 행에서 미완료 키워드를 읽고,
-        source 시트에서 각 키워드의 블로그 아이디 목록을 가져옴.
+        today = datetime.now(KST).date()
+        all_vals = _sh(self._ws.get_all_values)
+        row_index_set = set(row_indices) if row_indices else None
+        rows = []
 
-        Returns:
-          keyword_to_bids: {keyword: [blog_id, ...]}
-          keyword_to_row:  {keyword: result_sheet_row_number}
-        """
-        result_all = _sh(self._ws.get_all_values)
-        result_header = result_all[0] if result_all else []
-        kw_col = next((i for i, h in enumerate(result_header) if h == "키워드"), 0)
-        done_col = self._header_map.get("처리완료")
-
-        pending: dict[str, int] = {}
-        for row_num in row_indices:
-            idx = row_num - 1
-            if idx <= 0 or idx >= len(result_all):
+        for i, row in enumerate(all_vals[1:]):
+            row_num = i + 2
+            if row_index_set and row_num not in row_index_set:
                 continue
-            row = result_all[idx]
-            kw = row[kw_col].strip() if kw_col < len(row) else ""
-            if not kw:
+
+            date_str = row[self.COL_DATE - 1].strip() if len(row) >= self.COL_DATE else ""
+            pub_date = _parse_date(date_str)
+            if pub_date is None:
                 continue
-            done_val = row[done_col - 1].strip() if done_col and (done_col - 1) < len(row) else ""
-            if done_val == "Y":
+
+            url = row[self.COL_URL - 1].strip() if len(row) >= self.COL_URL else ""
+            blog_id = _normalize_blog_id(url) if url else ""
+            if not blog_id:
                 continue
-            pending[kw] = row_num
 
-        if not pending:
-            return {}, {}
+            for offset, (main_col, sub_col) in self.DATE_OFFSET_COLS.items():
+                if today != pub_date + timedelta(days=offset):
+                    continue
 
-        src_all = _sh(self._source_ws.get_all_values)
-        src_header = src_all[0] if src_all else []
-        src_kw_idx = next((i for i, h in enumerate(src_header) if h == "키워드"), 0)
-        src_id_idx = next((i for i, h in enumerate(src_header) if h == "아이디"), 1)
+                main_kw = row[self.COL_MAIN_KW - 1].strip() if len(row) >= self.COL_MAIN_KW else ""
+                sub_kw = row[self.COL_SUB_KW - 1].strip() if len(row) >= self.COL_SUB_KW else ""
+                cur_main = row[main_col - 1].strip() if len(row) >= main_col else ""
+                cur_sub = row[sub_col - 1].strip() if len(row) >= sub_col else ""
 
-        seen_ids: set[str] = set()
-        all_blog_ids: list[str] = []
-        for row in src_all[1:]:
-            bid = _normalize_blog_id(row[src_id_idx]) if src_id_idx < len(row) else ""
-            if bid and bid not in seen_ids:
-                seen_ids.add(bid)
-                all_blog_ids.append(bid)
-
-        keyword_to_bids = {kw: all_blog_ids for kw in pending}
-        keyword_to_row = dict(pending)
-        return keyword_to_bids, keyword_to_row
-
-    def read_keywords_with_ids(
-        self, start: int, count: int | None
-    ) -> tuple[dict[str, list[str]], dict[str, int]]:
-        """start/count 범위의 미완료 키워드와 블로그 아이디를 읽기 (로컬/수동 실행용)."""
-        result_all = _sh(self._ws.get_all_values)
-        if len(result_all) < 2:
-            return {}, {}
-        result_header = result_all[0]
-        kw_col = next((i for i, h in enumerate(result_header) if h == "키워드"), 0)
-        done_col = self._header_map.get("처리완료")
-        data_rows = result_all[1:]
-        sliced = data_rows[start : (start + count) if count else None]
-
-        pending: dict[str, int] = {}
-        for i, row in enumerate(sliced):
-            kw = row[kw_col].strip() if kw_col < len(row) else ""
-            if not kw:
-                continue
-            done_val = row[done_col - 1].strip() if done_col and (done_col - 1) < len(row) else ""
-            if done_val != "Y":
-                pending[kw] = start + i + 2
-
-        if not pending:
-            return {}, {}
-
-        src_all = _sh(self._source_ws.get_all_values)
-        src_header = src_all[0] if src_all else []
-        src_kw_idx = next((i for i, h in enumerate(src_header) if h == "키워드"), 0)
-        src_id_idx = next((i for i, h in enumerate(src_header) if h == "아이디"), 1)
-
-        seen_ids: set[str] = set()
-        all_blog_ids: list[str] = []
-        for row in src_all[1:]:
-            bid = _normalize_blog_id(row[src_id_idx]) if src_id_idx < len(row) else ""
-            if bid and bid not in seen_ids:
-                seen_ids.add(bid)
-                all_blog_ids.append(bid)
-
-        keyword_to_bids = {kw: all_blog_ids for kw in pending}
-        keyword_to_row = dict(pending)
-        return keyword_to_bids, keyword_to_row
-
-    def stage_keyword_result(self, row_idx: int, exposed: bool | None, error: str | None):
-        """키워드 1건의 결과를 버퍼에 추가. FLUSH_EVERY에 도달하면 자동 flush."""
-        update = {
-            "처리완료": "Y",
-            "노출여부": "O" if exposed else ("X" if exposed is not None else ""),
-            "오류": error or "",
-        }
-        for col_name, value in update.items():
-            if col_name in self._header_map:
-                self._pending.append({
-                    "range": self._rowcol_to_a1(row_idx, self._header_map[col_name]),
-                    "values": [[value]],
+                rows.append({
+                    "row_idx": row_num,
+                    "main_kw": main_kw,
+                    "sub_kw": sub_kw,
+                    "blog_id": blog_id,
+                    "main_col": main_col,
+                    "sub_col": sub_col,
+                    "main_done": bool(cur_main),
+                    "sub_done": bool(cur_sub),
                 })
+                break
 
+        return rows
+
+    def stage_result(self, row_idx: int, col: int):
+        """노출 확인 시 'O' 기록 (미노출은 호출하지 않음)."""
+        self._pending.append({
+            "range": self._rowcol_to_a1(row_idx, col),
+            "values": [["O"]],
+        })
         self._staged_count += 1
         if self._staged_count >= self.FLUSH_EVERY:
             self.flush()
@@ -431,9 +399,8 @@ class BlogExposureSheetsSession:
     def flush(self):
         if not self._pending:
             return
-        from collections import defaultdict as dd
         from gspread.utils import a1_to_rowcol
-        rows: dict = dd(dict)
+        rows: dict = defaultdict(dict)
         for item in self._pending:
             row, col = a1_to_rowcol(item["range"])
             rows[row][col] = item["values"][0][0]
@@ -449,26 +416,32 @@ class BlogExposureSheetsSession:
 
 
 async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
-                     start: int, count: int | None,
-                     source_gid: int | None = None,
                      row_indices: list[int] | None = None):
-    """Google Sheets 모드: 소스 시트에서 블로그 아이디 읽고, 결과 시트에 키워드별 O/X 씀."""
-    session = BlogExposureSheetsSession(spreadsheet_id, gid, source_gid=source_gid or None)
+    """Google Sheets 모드: 날짜 기준 메인/서브 키워드별 노출 여부 확인 후 기록."""
+    session = BlogExposureSheetsSession(spreadsheet_id, gid)
+    rows = session.read_pending_rows(row_indices)
 
-    if row_indices is not None:
-        kw_to_bids, kw_to_row = session.read_keywords_by_indices(row_indices)
-    else:
-        kw_to_bids, kw_to_row = session.read_keywords_with_ids(start, count)
-
-    for kw, bids in kw_to_bids.items():
-        _mask_for_ci(kw, *bids)
-
-    if not kw_to_bids:
-        print("처리할 키워드가 없습니다.")
+    if not rows:
+        print("처리할 행이 없습니다.")
         return
 
-    unique_kw = len(kw_to_bids)
-    print(f"Google Sheets 모드 | 처리 예정: {unique_kw}개 키워드")
+    # 같은 키워드는 한 번만 검색: keyword → [(row_idx, blog_id, col), ...]
+    search_groups: dict[str, list[tuple[int, str, int]]] = defaultdict(list)
+    for row in rows:
+        if row["main_kw"] and not row["main_done"]:
+            search_groups[row["main_kw"]].append((row["row_idx"], row["blog_id"], row["main_col"]))
+        if row["sub_kw"] and not row["sub_done"]:
+            search_groups[row["sub_kw"]].append((row["row_idx"], row["blog_id"], row["sub_col"]))
+
+    for row in rows:
+        _mask_for_ci(row["main_kw"], row["sub_kw"], row["blog_id"])
+
+    unique_kw = len(search_groups)
+    if not unique_kw:
+        print("모든 행이 이미 처리되었습니다.")
+        return
+
+    print(f"처리 예정: {len(rows)}행 → {unique_kw}회 검색")
     eta = unique_kw * ((DELAY_MIN + DELAY_MAX) / 2)
     print(f"예상 소요 시간: 약 {int(eta // 3600)}시간 {int((eta % 3600) // 60)}분\n")
 
@@ -477,18 +450,22 @@ async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
         context = await make_context(browser)
         page = await context.new_page()
 
-        for kw_idx, (kw, blog_ids) in enumerate(kw_to_bids.items()):
-            row_idx = kw_to_row[kw]
-            print(f"[{kw_idx + 1:>5}/{unique_kw}] ({len(blog_ids)}개) ...", end=" ", flush=True)
+        for kw_idx, (kw, targets) in enumerate(search_groups.items()):
+            blog_ids = list({t[1] for t in targets})
+            print(f"[{kw_idx + 1:>5}/{unique_kw}] '{kw}' ({len(blog_ids)}개) ...", end=" ", flush=True)
 
             result = await search_keyword_exposure(page, kw, blog_ids)
-            exposed = any(result["exposures"].values()) if result["exposures"] else False
-            session.stage_keyword_result(row_idx, exposed, result["error"])
+
+            for row_idx, blog_id, col in targets:
+                exposed = result["exposures"].get(blog_id)
+                if exposed and not result["error"]:
+                    session.stage_result(row_idx, col)
 
             if result["error"]:
                 print(f"오류: {result['error']}")
             else:
-                print("O" if exposed else "X")
+                summary = " ".join("O" if result["exposures"].get(t[1]) else "-" for t in targets)
+                print(summary)
 
             if kw_idx == unique_kw - 1:
                 break
@@ -508,20 +485,18 @@ async def run_sheets(spreadsheet_id: str, gid: int, headless: bool,
         await browser.close()
 
     session.flush()
-    print(f"\n완료: {unique_kw}개 키워드 처리 → 구글 시트에 저장됨")
+    print(f"\n완료: {len(rows)}행 처리됨")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="키워드 검색 → 블로그 아이디 노출 여부 확인 (O/X)")
-    parser.add_argument("input_file", nargs="?", help="키워드(A열)/아이디(B열) Excel 파일 경로")
-    parser.add_argument("--start", type=int, default=0, help="시작 행 번호 (0-based, 기본: 0)")
-    parser.add_argument("--count", type=int, default=None, help="처리할 행 수 (기본: 전체)")
-    parser.add_argument("--output-dir", help="결과 파일 저장 폴더 (기본: 입력 파일과 동일)")
-    parser.add_argument("--headless", action="store_true", help="브라우저 숨김 모드")
-    # Google Sheets 모드
-    parser.add_argument("--sheets-id", help="Google Spreadsheet ID")
-    parser.add_argument("--sheet-gid", type=int, default=0, help="결과 시트 GID")
-    parser.add_argument("--source-gid", type=int, default=None, help="키워드 소스 시트 GID")
+    parser = argparse.ArgumentParser(description="키워드 검색 → 블로그 URL 노출 여부 확인 (O/빈칸)")
+    parser.add_argument("input_file", nargs="?", help="키워드/아이디 Excel 파일 경로 (로컬 모드)")
+    parser.add_argument("--start", type=int, default=0)
+    parser.add_argument("--count", type=int, default=None)
+    parser.add_argument("--output-dir")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--sheets-id")
+    parser.add_argument("--sheet-gid", type=int, default=0)
     parser.add_argument("--row-indices", help="처리할 시트 행 번호 (쉼표 구분, 1-based)")
     args = parser.parse_args()
 
@@ -532,8 +507,6 @@ def main():
         )
         asyncio.run(run_sheets(
             args.sheets_id, args.sheet_gid, args.headless,
-            args.start, args.count,
-            source_gid=args.source_gid or None,
             row_indices=row_indices,
         ))
     elif args.input_file:

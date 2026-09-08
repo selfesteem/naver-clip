@@ -3,16 +3,16 @@ name: 블로그 노출 여부 확인
 on:
   workflow_dispatch:
     inputs:
-      sheet_name:
-        description: '시트 탭 이름 (비워두면 자동: YYYYMMDD_노출여부)'
-        default: ''
-        required: false
       source_gid:
-        description: '키워드+아이디 소스 시트 GID (비워두면 secrets.SOURCE_GID)'
+        description: '시트 GID (비워두면 secrets.SOURCE_GID)'
         default: ''
         required: false
       max_keywords:
-        description: '처리할 최대 키워드 수 (테스트용, 비워두면 전체)'
+        description: '처리할 최대 행 수 (테스트용, 비워두면 전체)'
+        default: ''
+        required: false
+      row_indices:
+        description: '처리할 행 번호 직접 지정 (쉼표 구분, 예: 1731-1865 또는 1731,1732,...) — 날짜 필터 우선'
         default: ''
         required: false
 
@@ -37,75 +37,91 @@ jobs:
       - name: 의존성 설치
         run: pip install gspread google-auth
 
-      - name: 시트 생성 및 워커 배분
+      - name: 미완료 행 수집 및 워커 배분
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           SOURCE_GID: ${{ secrets.SOURCE_GID }}
-          MANUAL_SHEET_NAME: ${{ inputs.sheet_name || '' }}
           INPUT_SOURCE_GID: ${{ inputs.source_gid || '' }}
           MAX_KEYWORDS: ${{ inputs.max_keywords || '' }}
+          INPUT_ROW_INDICES: ${{ inputs.row_indices || '' }}
         run: |
           python - <<'EOF'
           import os, sys, math, json
-          from datetime import datetime, timezone, timedelta
+          from datetime import datetime, date, timedelta, timezone
           sys.path.insert(0, ".")
-          from sheets_io import create_keyword_exposure_sheet, _get_client, _api_call
-
-          result_cols = ["처리완료", "노출여부", "오류"]
+          from sheets_io import _get_client, _api_call
 
           KST = timezone(timedelta(hours=9))
-          now = datetime.now(KST)
-          sheet_name = os.environ.get("MANUAL_SHEET_NAME") or f"{now.strftime('%Y%m%d')}_노출여부"
+          today = datetime.now(KST).date()
 
           source_gid = os.environ.get("INPUT_SOURCE_GID", "").strip() or os.environ["SOURCE_GID"]
           spreadsheet_id = os.environ["SPREADSHEET_ID"]
-
-          new_gid, total = create_keyword_exposure_sheet(
-              spreadsheet_id,
-              int(source_gid),
-              sheet_name,
-              result_cols,
-          )
-
-          # 결과 시트에서 미완료 행 목록 수집 (1 행 = 1 키워드)
-          client = _get_client()
-          ss = client.open_by_key(spreadsheet_id)
-          ws = next(w for w in _api_call(ss.worksheets) if w.id == new_gid)
-          all_vals = _api_call(ws.get_all_values)
-
-          header = all_vals[0] if all_vals else []
-          done_col_idx = next((i for i, h in enumerate(header) if h == "처리완료"), None)
-          data_rows = all_vals[1:] if len(all_vals) > 1 else []
-
           max_kw = os.environ.get("MAX_KEYWORDS", "").strip()
 
-          pending_rows = []
-          for i, row in enumerate(data_rows):
-              if not row or not row[0].strip():
-                  continue
-              done_val = row[done_col_idx].strip() if done_col_idx is not None and done_col_idx < len(row) else ""
-              if done_val == "Y":
-                  continue
-              pending_rows.append(i + 2)  # 1-based 행 번호 (헤더=1)
+          # 행 번호 직접 지정 여부 확인 (범위 표기 지원: "1731-1865")
+          raw_indices = os.environ.get("INPUT_ROW_INDICES", "").strip()
+          forced_rows = []
+          if raw_indices:
+              for part in raw_indices.split(","):
+                  part = part.strip()
+                  if "-" in part and not part.startswith("-"):
+                      a, b = part.split("-", 1)
+                      forced_rows.extend(range(int(a), int(b) + 1))
+                  elif part.isdigit():
+                      forced_rows.append(int(part))
+
+          if forced_rows:
+              pending_rows = forced_rows
+              print(f"→ 직접 지정 모드: {len(pending_rows)}행")
+          else:
+              client = _get_client()
+              ss = client.open_by_key(spreadsheet_id)
+              ws = next(w for w in _api_call(ss.worksheets) if w.id == int(source_gid))
+              all_vals = _api_call(ws.get_all_values)
+
+              COL_DATE = 0   # A
+              COL_URL  = 13  # N
+              OFFSET_COLS = {0: (5, 6), 1: (7, 8), 7: (9, 10)}
+
+              def parse_date(s):
+                  for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%Y%m%d"):
+                      try:
+                          return datetime.strptime(s.strip(), fmt).date()
+                      except ValueError:
+                          pass
+                  return None
+
+              pending_rows = []
+              for i, row in enumerate(all_vals[1:]):
+                  row_num = i + 2
+                  date_str = row[COL_DATE].strip() if len(row) > COL_DATE else ""
+                  pub_date = parse_date(date_str)
+                  if pub_date is None:
+                      continue
+                  url = row[COL_URL].strip() if len(row) > COL_URL else ""
+                  if not url:
+                      continue
+                  for offset, (main_col, sub_col) in OFFSET_COLS.items():
+                      if today != pub_date + timedelta(days=offset):
+                          continue
+                      cur_main = row[main_col].strip() if len(row) > main_col else ""
+                      cur_sub  = row[sub_col].strip()  if len(row) > sub_col  else ""
+                      if not cur_main or not cur_sub:
+                          pending_rows.append(row_num)
+                      break
+
+              print(f"→ GID={source_gid}, 오늘({today}), 미완료 {len(pending_rows)}행")
 
           if max_kw:
               pending_rows = pending_rows[:int(max_kw)]
 
-          # 행을 10개 워커에 균등 배분
           JOB_COUNT = 10
           chunk = math.ceil(len(pending_rows) / JOB_COUNT) if pending_rows else 0
           jobs = [pending_rows[j * chunk : (j + 1) * chunk] if chunk else [] for j in range(JOB_COUNT)]
 
-          config = {
-              "gid": new_gid,
-              "source_gid": int(source_gid),
-              "sheet_name": sheet_name,
-              "jobs": jobs,
-          }
+          config = {"gid": int(source_gid), "jobs": jobs}
           with open("config.json", "w") as f:
               json.dump(config, f)
-
-          print(f"→ 시트: '{sheet_name}', GID={new_gid}, 전체 {total}키워드, 미완료 {len(pending_rows)}키워드")
           EOF
 
       # artifact로 전달 (job output은 secret masking 대상이라 GID가 *** 로 치환될 수 있음)
@@ -153,16 +169,11 @@ jobs:
           job_index = int(os.environ["JOB_INDEX"])
           job_rows = config["jobs"][job_index] if job_index < len(config["jobs"]) else []
 
-          source_gid = config["source_gid"]
-          if not job_rows:
-              skip, row_indices_str, gid = "true", "", config["gid"]
-          else:
-              skip = "false"
-              row_indices_str = ",".join(map(str, job_rows))
-              gid = config["gid"]
+          skip = "true" if not job_rows else "false"
+          row_indices_str = ",".join(map(str, job_rows))
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"skip={skip}\nrow_indices={row_indices_str}\ngid={gid}\n")
+              f.write(f"skip={skip}\nrow_indices={row_indices_str}\ngid={config['gid']}\n")
 
           print(f"job_index={job_index} → skip={skip}, rows={len(job_rows)}")
           EOF
@@ -174,10 +185,8 @@ jobs:
           RESULT_GID: ${{ steps.range.outputs.gid }}
           ROW_INDICES: ${{ steps.range.outputs.row_indices }}
         run: |
-          SOURCE_GID=$(python3 -c "import json; print(json.load(open('config.json'))['source_gid'])")
           python blog_exposure.py \
             --sheets-id ${{ env.SPREADSHEET_ID }} \
             --sheet-gid $RESULT_GID \
-            --source-gid "$SOURCE_GID" \
             --row-indices "$ROW_INDICES" \
             --headless
