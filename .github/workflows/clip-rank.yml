@@ -1,0 +1,144 @@
+name: 네이버 클립 순위 확인
+
+on:
+  schedule:
+    - cron: '0 22 * * *'  # 매일 KST 07:00 (UTC 22:00 전날)
+  workflow_dispatch:
+    inputs:
+      max_keywords:
+        description: '처리할 최대 행 수 (테스트용, 비워두면 전체)'
+        default: ''
+        required: false
+      row_indices:
+        description: '처리할 행 번호 직접 지정 (쉼표 구분, 예: 16,20,30) — 지정 시 워커 배분 무시'
+        default: ''
+        required: false
+
+concurrency:
+  group: clip-rank
+  cancel-in-progress: true
+
+env:
+  SPREADSHEET_ID: ${{ secrets.CLIP_SPREADSHEET_ID }}
+
+jobs:
+  # ── 1단계: 날짜 탭 생성 + 미완료 행 워커 배분 ────────────────────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 날짜 탭 생성 + 미완료 행 수집 + 워커 배분
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          MAX_KEYWORDS: ${{ inputs.max_keywords || '' }}
+        run: |
+          EXTRA_ARGS=""
+          if [ -n "$MAX_KEYWORDS" ]; then EXTRA_ARGS="--max-keywords $MAX_KEYWORDS"; fi
+          python clip_rank.py --prepare --workers 10 $EXTRA_ARGS
+
+      # artifact로 전달 (job output은 secret masking 대상이라 값이 *** 로 치환될 수 있음)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clip-rank-config
+          path: config.json
+
+  # ── 2단계: 검색 실행 (병렬 matrix, 각 워커는 배정받은 행만 갱신) ──────────────
+  search:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        job_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: Playwright 브라우저 설치
+        run: playwright install chromium --with-deps
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: clip-rank-config
+
+      - name: 행 목록 계산
+        id: range
+        env:
+          JOB_INDEX: ${{ matrix.job_index }}
+          INPUT_ROW_INDICES: ${{ inputs.row_indices || '' }}
+        run: |
+          python - <<'EOF'
+          import json, os
+
+          with open("config.json") as f:
+              config = json.load(f)
+
+          forced = os.environ.get("INPUT_ROW_INDICES", "").strip()
+          if forced:
+              rows = [int(x) for x in forced.split(",") if x.strip().isdigit()]
+          else:
+              idx = int(os.environ["JOB_INDEX"])
+              jobs = config["jobs"]
+              rows = jobs[idx] if idx < len(jobs) else []
+
+          skip = "true" if not rows else "false"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"skip={skip}\n")
+              f.write(f"row_indices={','.join(map(str, rows))}\n")
+              f.write(f"tab={config['tab']}\n")
+
+          print(f"job_index={os.environ['JOB_INDEX']} → skip={skip}, rows={len(rows)}, tab={config['tab']}")
+          EOF
+
+      - name: 클립 순위 검출 실행
+        if: steps.range.outputs.skip == 'false'
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          ROW_INDICES: ${{ steps.range.outputs.row_indices }}
+          TAB: ${{ steps.range.outputs.tab }}
+        run: |
+          python clip_rank.py \
+            --row-indices "$ROW_INDICES" \
+            --tab "$TAB" \
+            --headless
+
+  # ── 3단계: 전체 워커 종료 후 노출 키워드 합계 기록 ────────────────────────────
+  summary:
+    needs: [prepare, search]
+    if: always()  # 일부 워커 실패해도 완료분 기준으로 집계
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: clip-rank-config
+
+      - name: 노출 키워드 합계 기록
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          TAB=$(python -c "import json; print(json.load(open('config.json'))['tab'])")
+          python clip_rank.py --summary --tab "$TAB"
