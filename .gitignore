@@ -31,3 +31,9 @@ __pycache__/
 # Claude Code 세션
 .claude/
 .playwright-mcp/
+
+# 클립 순위 prepare 배분 파일 (CI/로컬 생성물)
+config.json
+
+# OpenCode 에이전트 메타데이터
+.omo/
