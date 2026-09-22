@@ -142,3 +142,11 @@ jobs:
         run: |
           TAB=$(python -c "import json; print(json.load(open('config.json'))['tab'])")
           python clip_rank.py --summary --tab "$TAB"
+
+      - name: 일별 리포트 생성 (Actions 요약 표시)
+        if: always()  # 합계 기록 실패해도 리포트는 시도
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          TAB=$(python -c "import json; print(json.load(open('config.json'))['tab'])")
+          python clip_report.py --tab "$TAB"
