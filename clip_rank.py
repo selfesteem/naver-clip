@@ -284,13 +284,18 @@ def _result_row(r: dict) -> list[str]:
     ]
 
 
+def _mask_channel(channel_id: str) -> str:
+    """CI(공개 저장소) 로그에서 채널 ID 비식별화. 로컬은 그대로 출력."""
+    return "***" if os.environ.get("GITHUB_ACTIONS") else channel_id
+
+
 def _brief(r: dict) -> str:
     if r["status"] == "섹션없음":
         return "클립 섹션 없음 → 패스"
     if r["status"] == "오류":
         return f"오류: {r['error']}"
     if r["matched"]:
-        parts = [f"{m['rank']}위({m['channel_id']}, {m['conds']})" for m in r["matched"]]
+        parts = [f"{m['rank']}위({_mask_channel(m['channel_id'])}, {m['conds']})" for m in r["matched"]]
         return f"★ {' | '.join(parts)} / 총 {r['total_clips']}개"
     return f"미노출 (총 {r['total_clips']}개)"
 
@@ -442,8 +447,10 @@ def _summary(results: list[dict]) -> str:
 
 
 async def run_worker(args) -> None:
+    _mask_for_ci(*NAME_KEYWORDS, *URL_KEYWORDS)
     sid = _spreadsheet_id(args.sheets_id)
     row_keywords, channel_ids = load_source(sid)
+    _mask_for_ci(*channel_ids)  # 채널 ID가 다른 로그 경로(에러 등)로 새는 것 방지
     print(f"시트 로드: 키워드 {len(row_keywords)}개 | 채널 {len(channel_ids)}개 (1:N 매칭용)")
 
     ws, tab = ensure_result_tab(sid, row_keywords, tab_name=args.tab)
