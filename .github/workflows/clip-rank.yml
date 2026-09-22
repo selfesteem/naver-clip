@@ -5,6 +5,14 @@ on:
     - cron: '0 22 * * *'  # 매일 KST 07:00 (UTC 22:00 전날)
   workflow_dispatch:
     inputs:
+      report_only:
+        description: '보고서만 생성 (검색 건너뜀, 기존 탭 대상)'
+        type: boolean
+        default: false
+      tab:
+        description: '리포트 대상 탭 (report_only 전용, 비워두면 오늘 KST 클립순위_MMDD)'
+        default: ''
+        required: false
       max_keywords:
         description: '처리할 최대 행 수 (테스트용, 비워두면 전체)'
         default: ''
@@ -24,6 +32,7 @@ env:
 jobs:
   # ── 1단계: 날짜 탭 생성 + 미완료 행 워커 배분 ────────────────────────────────
   prepare:
+    if: inputs.report_only != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -133,10 +142,12 @@ jobs:
         run: pip install -r requirements.txt
 
       - uses: actions/download-artifact@v4
+        if: inputs.report_only != true
         with:
           name: clip-rank-config
 
       - name: 노출 키워드 합계 기록
+        if: inputs.report_only != true
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: |
@@ -144,9 +155,18 @@ jobs:
           python clip_rank.py --summary --tab "$TAB"
 
       - name: 일별 리포트 생성 (Actions 요약 표시)
-        if: always()  # 합계 기록 실패해도 리포트는 시도
+        if: always()  # 검색·합계 실패/생략과 무관하게 생성
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          INPUT_TAB: ${{ inputs.tab || '' }}
         run: |
-          TAB=$(python -c "import json; print(json.load(open('config.json'))['tab'])")
+          if [ -f config.json ]; then
+            TAB=$(python -c "import json; print(json.load(open('config.json'))['tab'])")
+          else
+            TAB="$INPUT_TAB"
+          fi
+          if [ -z "$TAB" ]; then
+            TAB=$(python -c "from clip_rank import result_tab_name; print(result_tab_name())")
+          fi
+          echo "리포트 대상 탭: $TAB"
           python clip_report.py --tab "$TAB"
