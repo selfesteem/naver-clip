@@ -216,6 +216,14 @@ def test_extract_trend_text_shapes() -> None:
     assert clip_report_fmt._extract_trend_text(
         {"candidates": [{"content": {"parts": [{"text": "정상"}]}}]}
     ) == "정상"
+    # thinking 모델의 사고 파트(thought=true)는 제외하고 본문만 결합
+    assert clip_report_fmt._extract_trend_text(
+        {"candidates": [{"content": {"parts": [
+            {"text": "생각하는 중...", "thought": True},
+            {"text": "답변 1줄"},
+            {"text": "답변 2줄"},
+        ]}}]}
+    ) == "답변 1줄답변 2줄"
 
 
 # ── 실행 ──────────────────────────────────────────────────────────

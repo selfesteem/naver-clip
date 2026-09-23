@@ -237,7 +237,7 @@ _TREND_PROMPT = """아래 네이버 클립 노출 일별 리포트를 읽고 추
 def _extract_trend_text(data: dict) -> str:
     candidates = data.get("candidates") or []
     parts = (candidates[0].get("content") or {}).get("parts") or [] if candidates else []
-    return (parts[0].get("text") or "").strip() if parts else ""
+    return "".join(p.get("text") or "" for p in parts if not p.get("thought")).strip()
 
 
 def gemini_trend(report: str) -> str:
@@ -246,6 +246,8 @@ def gemini_trend(report: str) -> str:
     GEMINI_API_KEY 가 없으면 기능 꺼짐(빈 값). 호출 실패 시에도 빈 값을
     반환해 리포트 본문이 영향받지 않는다. 모델은 GEMINI_MODEL 로
     오버라이드 가능 (기본 gemini-2.5-flash).
+    thinkingBudget 0: 2.5계열 추론 토큰이 maxOutputTokens 예산을 먼저
+    소진해 답변이 잘리는 현상(유료 토큰 낭비 포함)을 막는다.
     """
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -253,7 +255,11 @@ def gemini_trend(report: str) -> str:
     model = os.environ.get("GEMINI_MODEL", "").strip() or GEMINI_MODEL_DEFAULT
     payload = json.dumps({
         "contents": [{"parts": [{"text": _TREND_PROMPT + report}]}],
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 300},
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 1024,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }).encode()
     req = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
