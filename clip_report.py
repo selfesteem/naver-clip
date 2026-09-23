@@ -193,7 +193,7 @@ def main() -> int:
 
     insight = gemini_trend(report)
     if insight:
-        report = report.rstrip() + "\n\nAI 추세 요약\n" + insight + "\n"
+        report = report.rstrip() + "\n\n추세 요약\n" + insight + "\n"
         print("Gemini 추세 요약 반영됨")
 
     print(report)
