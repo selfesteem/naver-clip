@@ -9,7 +9,11 @@
      (1) 채널명에 "대륜" 포함
      (2) 채널 URL에 "daeryun" 포함
      (3) 시트 '채널' 열에 등록된 URL 중 하나와 채널 ID 일치 (1:N)
-  4) 매칭된 클립의 순위를 날짜별 탭(클립순위_MMDD)의 해당 행에 기록
+  4) 섹션에 '클립더보기' 링크가 있으면 클립탭(ssc=tab.m_clip.all) 전체
+     목록으로 이동해 1-TAB_RANK_LIMIT위까지 재수집 — 섹션 2x2 그리드는
+     탭 목록의 미리보기(앞 4개 순서 일치)이므로 탭 순위를 우선한다.
+     탭 이동/수집 실패 시 섹션 수집 결과를 그대로 사용 (폴백)
+  5) 매칭된 클립의 순위를 날짜별 탭(클립순위_MMDD)의 해당 행에 기록
 
 행 규칙 (워커 충돌 방지 핵심):
   - 결과 탭 행 번호 = 소스 탭('키워드/채널') 행 번호 (1:1 고정, prepare가 프리필)
@@ -45,7 +49,7 @@ import random
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 from dotenv import load_dotenv
 from gspread import Worksheet
@@ -77,6 +81,9 @@ BATCH_BREAK_MIN = 15
 BATCH_BREAK_MAX = 30
 CONTEXT_RESET_EVERY = 200
 
+SEARCH_URL = "https://m.search.naver.com/search.naver"
+TAB_RANK_LIMIT = 10               # 클립탭 전체 목록에서 체크할 최대 순위
+
 USER_AGENTS = [
     MOBILE_UA,
     (
@@ -99,7 +106,7 @@ VIEWPORTS = [
 RESERVED_TV_PATHS = {"v", "search", "clips", "my", "feed", "popular", "ranking"}
 
 # ── 클립 섹션 수집 JS ─────────────────────────────────────────────
-# 반환: { section_found, clips: [{rank, channel_id, href, channel_text, title}] }
+# 반환: { section_found, clips: [{rank, channel_id, href, channel_text, title}], more_href }
 
 _CLIP_JS = """
 () => {
@@ -114,7 +121,7 @@ _CLIP_JS = """
     }
 
     const clipSec = findClipSection();
-    if (!clipSec) return { section_found: false, clips: [] };
+    if (!clipSec) return { section_found: false, clips: [], more_href: '' };
 
     const RESERVED = new Set(['v', 'search', 'clips', 'my', 'feed', 'popular', 'ranking']);
     const anchors = Array.from(clipSec.querySelectorAll('a[href]'));
@@ -151,7 +158,18 @@ _CLIP_JS = """
             lastTitle = text.slice(0, 80);
         }
     }
-    return { section_found: true, clips };
+
+    const moreA = Array.from(clipSec.querySelectorAll('a[href]')).find(a => {
+        const href = a.getAttribute('href') || '';
+        if (href.includes('ssc=tab.m_clip')) return true;
+        const t = (a.textContent || '').trim().replace(/\\s+/g, '');
+        return t.includes('클립더보기');
+    });
+    return {
+        section_found: true,
+        clips,
+        more_href: moreA ? (moreA.getAttribute('href') || '') : '',
+    };
 }
 """
 
@@ -178,6 +196,47 @@ _SCROLL_JS = """
         }
     }
     return scrolled;
+}
+"""
+
+# 클립탭(ssc=tab.m_clip.all) 전체 목록 수집 — 문서 전체에서 클립 링크를
+# DOM 순서대로 수집한다 (섹션 수집과 동일한 병합/제목 규칙).
+_CLIP_TAB_JS = """
+() => {
+    const RESERVED = new Set(['v', 'search', 'clips', 'my', 'feed', 'popular', 'ranking']);
+    const clips = [];
+    let lastTitle = '';
+    for (const a of document.querySelectorAll('a[href]')) {
+        const href = a.getAttribute('href') || '';
+        const text = (a.textContent || '').trim().replace(/\\s+/g, ' ');
+
+        let channelId = null;
+        let m = href.match(/clip\\.naver\\.com\\/@([A-Za-z0-9_-]+)/);
+        if (m) {
+            channelId = m[1];
+        } else {
+            m = href.match(/tv\\.naver\\.com\\/([A-Za-z0-9_-]+)/);
+            if (m && !RESERVED.has(m[1])) channelId = m[1];
+        }
+
+        if (channelId) {
+            const prev = clips[clips.length - 1];
+            if (prev && prev.channel_id === channelId && !prev.title) {
+                prev.title = lastTitle;  // 같은 클립의 보조 링크 → 병합
+            } else {
+                clips.push({
+                    rank: clips.length + 1,
+                    channel_id: channelId,
+                    href,
+                    channel_text: text.slice(0, 80),
+                    title: lastTitle,
+                });
+            }
+        } else if (href.includes('m.naver.com/shorts') && text) {
+            lastTitle = text.slice(0, 80);
+        }
+    }
+    return clips;
 }
 """
 
@@ -216,14 +275,33 @@ def match_clip(clip: dict, sheet_channel_ids: set[str]) -> list[str]:
 
 # ── 검색 엔진 ─────────────────────────────────────────────────────
 
+async def _collect_clip_tab(page: Page, more_href: str) -> list[dict] | None:
+    """'클립더보기' 링크 → 클립탭 전체 목록 수집. 실패/빈 목록이면 None.
+
+    클립탭은 섹션 2x2 미리보기의 전체 목록이며 앞 4개 순서가 섹션과
+    일치한다. 통상 networkidle 시점에 전량 로드되지만, 일부만 로드된
+    경우 대비 스크롤 1회 재시도한다.
+    """
+    await page.goto(urljoin(SEARCH_URL, more_href), wait_until="networkidle", timeout=30_000)
+    await page.wait_for_timeout(1_500)
+    clips = await page.evaluate(_CLIP_TAB_JS)
+    if len(clips) < TAB_RANK_LIMIT:
+        await page.mouse.wheel(0, 2000)
+        await page.wait_for_timeout(1_000)
+        reloaded = await page.evaluate(_CLIP_TAB_JS)
+        if len(reloaded) > len(clips):
+            clips = reloaded
+    return clips or None
+
+
 async def search_clip_rank(page: Page, keyword: str, sheet_channel_ids: set[str]) -> dict:
     """키워드 1개 검색 → 클립 섹션 매칭 결과 반환."""
     result: dict = {
         "keyword": keyword, "status": "ok", "ranks": [], "matched": [],
-        "total_clips": 0, "error": None,
+        "total_clips": 0, "error": None, "source": "섹션",
     }
     try:
-        url = f"https://m.search.naver.com/search.naver?query={quote(keyword)}"
+        url = f"{SEARCH_URL}?query={quote(keyword)}"
         await page.goto(url, wait_until="networkidle", timeout=30_000)
         await page.wait_for_timeout(2_000)
 
@@ -243,9 +321,22 @@ async def search_clip_rank(page: Page, keyword: str, sheet_channel_ids: set[str]
             return result
 
         clips = raw["clips"]
-        result["total_clips"] = len(clips)
 
-        for clip in clips:
+        # 클립더보기 → 클립탭 전체 목록으로 10위까지 확장 (실패 시 섹션 결과 사용)
+        more_href = raw.get("more_href") or ""
+        if more_href:
+            try:
+                tab_clips = await _collect_clip_tab(page, more_href)
+            except Exception:
+                tab_clips = None
+            if tab_clips and len(tab_clips) >= len(clips):
+                clips = tab_clips
+                result["source"] = "클립탭"
+
+        result["total_clips"] = len(clips)
+        check_clips = clips[:TAB_RANK_LIMIT] if result["source"] == "클립탭" else clips
+
+        for clip in check_clips:
             conds = match_clip(clip, sheet_channel_ids)
             if conds:
                 result["ranks"].append(clip["rank"])
@@ -290,14 +381,15 @@ def _mask_channel(channel_id: str) -> str:
 
 
 def _brief(r: dict) -> str:
+    src = "[클립탭] " if r.get("source") == "클립탭" else ""
     if r["status"] == "섹션없음":
         return "클립 섹션 없음 → 패스"
     if r["status"] == "오류":
         return f"오류: {r['error']}"
     if r["matched"]:
         parts = [f"{m['rank']}위({_mask_channel(m['channel_id'])}, {m['conds']})" for m in r["matched"]]
-        return f"★ {' | '.join(parts)} / 총 {r['total_clips']}개"
-    return f"미노출 (총 {r['total_clips']}개)"
+        return f"{src}★ {' | '.join(parts)} / 총 {r['total_clips']}개"
+    return f"{src}미노출 (총 {r['total_clips']}개)"
 
 
 # ── Google Sheets ─────────────────────────────────────────────────
