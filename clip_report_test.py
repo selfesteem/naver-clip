@@ -6,11 +6,19 @@ clip_report 단위 검증 — 합성 탭 데이터로 통계·파싱·보고서 
     python clip_report_test.py    # 전체 통과 시 exit 0, 실패 시 exit 1
 """
 
+import json
 import sys
 from datetime import date, timedelta
 
+import clip_report_fmt
 from clip_report import TabStats, parse_tab_date, tab_stats
-from clip_report_fmt import _delta_int, _delta_pct, build_report
+from clip_report_fmt import (
+    _delta_int,
+    _delta_pct,
+    _split_chunks,
+    build_report,
+    send_chat_report,
+)
 
 HEADER = ["키워드", "순위", "매칭채널", "매칭조건", "클립제목", "총클립수", "처리완료", "오류"]
 
@@ -110,6 +118,44 @@ def test_build_report_missing_today() -> None:
     raise AssertionError("LookupError 미발생")
 
 
+def test_split_chunks() -> None:
+    # Given: 행 단위 텍스트 / When: limit 이하 분할 / Then: 행 경계 분할·무손실
+    text = "".join(f"행{i:03d} 가나다라마바사\n" for i in range(100))
+    chunks = _split_chunks(text, limit=60)
+    assert all(len(c) <= 60 for c in chunks), chunks
+    assert "".join(chunks) == text, chunks
+    assert len(chunks) > 1, chunks
+    assert _split_chunks("짧은 텍스트\n") == ["짧은 텍스트\n"]
+
+
+def test_send_chat_report_payload() -> None:
+    # Given: 가짜 urlopen / When: send_chat_report / Then: 청크별 JSON text 페이로드
+    calls: list[bytes] = []
+
+    class FakeResp:
+        def __enter__(self) -> "FakeResp":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    orig = clip_report_fmt.urllib.request.urlopen
+
+    def fake_urlopen(req: object, timeout: int = 0) -> FakeResp:
+        calls.append(getattr(req, "data"))
+        return FakeResp()
+
+    clip_report_fmt.urllib.request.urlopen = fake_urlopen
+    try:
+        sent = send_chat_report("가" * 500 + "\n" * 2 + "나\n", "https://example.invalid/hook")
+    finally:
+        clip_report_fmt.urllib.request.urlopen = orig
+    assert sent == len(calls) >= 1, (sent, len(calls))
+    for data in calls:
+        payload = json.loads(data)
+        assert set(payload) == {"text"} and payload["text"], payload
+
+
 # ── 실행 ──────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -120,6 +166,8 @@ def main() -> int:
         test_build_report_with_history,
         test_build_report_solo_day,
         test_build_report_missing_today,
+        test_split_chunks,
+        test_send_chat_report_payload,
     ]
     failed = 0
     for t in tests:

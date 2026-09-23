@@ -187,7 +187,7 @@ def main() -> int:
         return 2
 
     # 늦은 import: clip_report_fmt 가 이 모듈의 타입을 참조 (순환 방지)
-    from clip_report_fmt import build_report
+    from clip_report_fmt import build_report, send_chat_report
 
     report = build_report(history, today)
     print(report)
@@ -196,6 +196,11 @@ def main() -> int:
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write(f"\n```\n{report}```\n")
+
+    webhook = os.environ.get("GOOGLE_CHAT_WEBHOOK", "")
+    if webhook:
+        sent = send_chat_report(report, webhook)
+        print(f"Google Chat 전송 완료: {sent}개 메시지")
     return 0
 
 

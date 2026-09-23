@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""네이버 클립 일별 리포트 — 텍스트 조립 (clip_report 의 표현 계층, 순수 함수)"""
+"""네이버 클립 일별 리포트 — 텍스트 조립·전송 (clip_report 의 표현 계층)"""
 
+import json
+import urllib.request
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Final
 
 from clip_report import COMPARE_TIERS, TIERS, TabStats
+
+CHAT_CHUNK_LIMIT: Final[int] = 4000  # Google Chat 메시지 한도 4,096자 - 여유분
 
 
 # ── 값 객체 ────────────────────────────────────────────────────────
@@ -211,3 +216,34 @@ def build_report(history: dict[date, TabStats], today: date) -> str:
     if not shown:
         out.append("· 비교 데이터 없음")
     return "\n".join(out).rstrip() + "\n"
+
+
+# ── Google Chat 전송 ──────────────────────────────────────────────
+
+def _split_chunks(text: str, limit: int = CHAT_CHUNK_LIMIT) -> list[str]:
+    """텍스트를 행 경계 기준 limit 이하 청크로 분할 (내용 무손실)."""
+    chunks: list[str] = []
+    buf = ""
+    for line in text.splitlines(keepends=True):
+        if buf and len(buf) + len(line) > limit:
+            chunks.append(buf)
+            buf = ""
+        buf += line
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
+def send_chat_report(text: str, webhook_url: str) -> int:
+    """리포트를 Google Chat 웹훅으로 전송. 전송한 메시지 수 반환."""
+    sent = 0
+    for chunk in _split_chunks(text):
+        payload = json.dumps({"text": chunk}).encode()
+        req = urllib.request.Request(
+            webhook_url,
+            data=payload,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+        )
+        with urllib.request.urlopen(req, timeout=15):
+            sent += 1
+    return sent

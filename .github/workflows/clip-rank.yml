@@ -159,6 +159,7 @@ jobs:
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           INPUT_TAB: ${{ inputs.tab || '' }}
+          GOOGLE_CHAT_WEBHOOK: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
         run: |
           if [ -f config.json ]; then
             TAB=$(python -c "import json; print(json.load(open('config.json'))['tab'])")
