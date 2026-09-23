@@ -92,7 +92,8 @@ def test_build_report_with_history() -> None:
     r = build_report(history, today)
     assert "총 키워드 5개" in r, r
     assert "데이터: 09/21 → 09/22" in r, r
-    for section in ("중복포함", "중복제거 (키워드 단위)", "전주 동일(09/15)",
+    for section in ("중복포함 (네이버클립 노출 기준)",
+                    "중복제거 (네이버클립 노출 기준 - 키워드 단위)", "전주 동일(09/15)",
                     "9월 평균 대비", "주 평균 대비"):
         assert section in r, f"섹션 누락: {section}\n{r}"
     for tier in ("1-3위", "1-5위", "1-10위"):

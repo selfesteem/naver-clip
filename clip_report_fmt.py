@@ -158,14 +158,14 @@ def build_report(history: dict[date, TabStats], today: date) -> str:
     out.append(f"데이터: {_md(prev.day)} → {_md(today)}" if prev
                else "데이터: 비교 가능한 이전 탭 없음")
     out.append("")
-    out.append("중복포함")
+    out.append("중복포함 (네이버클립 노출 기준)")
     if prev:
         out.extend(_line_dup_incl(cur, prev.stats, n) for n in TIERS)
     else:
         out.extend(f"● {_tier_label(n)}: {_cnt(cur.tiers[n].entries)}개 (비교 데이터 없음)"
                    for n in TIERS)
     out.append("")
-    out.append("중복제거 (키워드 단위)")
+    out.append("중복제거 (네이버클립 노출 기준 - 키워드 단위)")
     if prev:
         out.extend(_line_dedup(cur, prev.stats, n) for n in TIERS)
     else:
