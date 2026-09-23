@@ -2,6 +2,8 @@
 """네이버 클립 일별 리포트 — 텍스트 조립·전송 (clip_report 의 표현 계층)"""
 
 import json
+import os
+import sys
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -216,6 +218,55 @@ def build_report(history: dict[date, TabStats], today: date) -> str:
     if not shown:
         out.append("· 비교 데이터 없음")
     return "\n".join(out).rstrip() + "\n"
+
+
+# ── Gemini 추세 요약 (선택) ────────────────────────────────────────
+
+GEMINI_MODEL_DEFAULT: Final[str] = "gemini-2.5-flash"
+
+_TREND_PROMPT = """아래 네이버 클립 노출 일별 리포트를 읽고 추세 요약 2줄을 한국어로 작성하세요.
+규칙:
+- 첫째 줄: 전일·전주·평균 대비 노출 수/노출률 변화를 리포트에 있는 수치로만 요약
+- 둘째 줄: 리포트에서 확인되는 특징(구간별 편차, 오류/미처리 등)에 근거한 점검 또는 활용 방향 1문장
+- 리포트에 없는 수치·사실 추측 금지, 각 줄 100자 이내, 인사말·마크다운·이모지 없이 본문만
+
+리포트:
+"""
+
+
+def _extract_trend_text(data: dict) -> str:
+    candidates = data.get("candidates") or []
+    parts = (candidates[0].get("content") or {}).get("parts") or [] if candidates else []
+    return (parts[0].get("text") or "").strip() if parts else ""
+
+
+def gemini_trend(report: str) -> str:
+    """리포트 통계 → Gemini 2줄 추세 요약.
+
+    GEMINI_API_KEY 가 없으면 기능 꺼짐(빈 값). 호출 실패 시에도 빈 값을
+    반환해 리포트 본문이 영향받지 않는다. 모델은 GEMINI_MODEL 로
+    오버라이드 가능 (기본 gemini-2.5-flash).
+    """
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return ""
+    model = os.environ.get("GEMINI_MODEL", "").strip() or GEMINI_MODEL_DEFAULT
+    payload = json.dumps({
+        "contents": [{"parts": [{"text": _TREND_PROMPT + report}]}],
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 300},
+    }).encode()
+    req = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        data=payload,
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"Gemini 추세 요약 실패(스킵): {e}", file=sys.stderr)
+        return ""
+    return _extract_trend_text(data)
 
 
 # ── Google Chat 전송 ──────────────────────────────────────────────

@@ -7,6 +7,7 @@ clip_report 단위 검증 — 합성 탭 데이터로 통계·파싱·보고서 
 """
 
 import json
+import os
 import sys
 from datetime import date, timedelta
 
@@ -17,6 +18,7 @@ from clip_report_fmt import (
     _delta_pct,
     _split_chunks,
     build_report,
+    gemini_trend,
     send_chat_report,
 )
 
@@ -157,6 +159,65 @@ def test_send_chat_report_payload() -> None:
         assert set(payload) == {"text"} and payload["text"], payload
 
 
+def test_gemini_trend_disabled_without_key() -> None:
+    # Given: GEMINI_API_KEY 없음 / When: gemini_trend / Then: 빈 값, 네트워크 호출 없음
+    os.environ.pop("GEMINI_API_KEY", None)
+    assert gemini_trend("리포트") == ""
+
+
+def test_gemini_trend_success_and_failure() -> None:
+    # Given: 가짜 urlopen / When: gemini_trend / Then: 성공→텍스트, 실패→빈 값
+    os.environ["GEMINI_API_KEY"] = "test-key"
+
+    class FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self) -> "FakeResp":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self._body
+
+    orig = clip_report_fmt.urllib.request.urlopen
+    body = json.dumps({"candidates": [{"content": {"parts": [
+        {"text": " 추세 문장1\n추세 문장2 "}
+    ]}}]}).encode()
+
+    clip_report_fmt.urllib.request.urlopen = (
+        lambda req, timeout=0: FakeResp(body)
+    )
+    try:
+        assert gemini_trend("리포트") == "추세 문장1\n추세 문장2"
+    finally:
+        clip_report_fmt.urllib.request.urlopen = orig
+
+    def boom(req: object, timeout: int = 0) -> None:
+        raise OSError("network down")
+
+    clip_report_fmt.urllib.request.urlopen = boom
+    try:
+        assert gemini_trend("리포트") == ""
+    finally:
+        clip_report_fmt.urllib.request.urlopen = orig
+        os.environ.pop("GEMINI_API_KEY", None)
+
+
+def test_extract_trend_text_shapes() -> None:
+    # Given: 결측 형태 응답 / When: _extract_trend_text / Then: 빈 값 (KeyError 없이)
+    assert clip_report_fmt._extract_trend_text({}) == ""
+    assert clip_report_fmt._extract_trend_text({"candidates": []}) == ""
+    assert clip_report_fmt._extract_trend_text(
+        {"candidates": [{"content": None}]}
+    ) == ""
+    assert clip_report_fmt._extract_trend_text(
+        {"candidates": [{"content": {"parts": [{"text": "정상"}]}}]}
+    ) == "정상"
+
+
 # ── 실행 ──────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -169,6 +230,9 @@ def main() -> int:
         test_build_report_missing_today,
         test_split_chunks,
         test_send_chat_report_payload,
+        test_gemini_trend_disabled_without_key,
+        test_gemini_trend_success_and_failure,
+        test_extract_trend_text_shapes,
     ]
     failed = 0
     for t in tests:
