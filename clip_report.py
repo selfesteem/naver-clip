@@ -187,9 +187,15 @@ def main() -> int:
         return 2
 
     # 늦은 import: clip_report_fmt 가 이 모듈의 타입을 참조 (순환 방지)
-    from clip_report_fmt import build_report, send_chat_report
+    from clip_report_fmt import build_report, gemini_trend, send_chat_report
 
     report = build_report(history, today)
+
+    insight = gemini_trend(report)
+    if insight:
+        report = report.rstrip() + "\n\nAI 추세 요약\n" + insight + "\n"
+        print("Gemini 추세 요약 반영됨")
+
     print(report)
 
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
