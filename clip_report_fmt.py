@@ -114,7 +114,7 @@ def _narrative(cur: TabStats, prev: Baseline | None,
         diff = cur.tiers[n].keywords - base.stats.tiers[n].keywords
         pp = cur.tier_rate(n) - base.stats.tier_rate(n)
         lines.append(
-            f"{base.name}({_md(base.day)}) 1-5위 중복제거 {_delta_int(0, diff)}"
+            f"{base.name}({_md(base.day)}) {_tier_label(n)} 중복제거 {_delta_int(0, diff)}"
             f"({_delta_pct(0, pp)}) — {_trend_phrase(diff, pp)}."
         )
     issues: list[str] = []

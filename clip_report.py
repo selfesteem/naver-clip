@@ -4,7 +4,7 @@
 
 날짜별 탭(클립순위_MMDD) → 일별 통계(TabStats):
   - 총 키워드 / 검색 완료 / 섹션없음 / 오류 / 미처리
-  - 구간별(1-3/1-5/1-10위) 중복포함(매치 항목 수) · 중복제거(키워드 수, 고유 영상 수)
+  - 구간별(1-2/1-4위) 중복포함(매치 항목 수) · 중복제거(키워드 수, 고유 영상 수)
   - 노출 영상: (매칭채널, 클립제목) 쌍 기준 고유
 
 보고서 텍스트 조립은 clip_report_fmt, CLI 는 이 파일의 main().
@@ -28,8 +28,8 @@ from clip_rank import (
 )
 from sheets_io import _api_call, _get_client
 
-TIERS: Final[tuple[int, ...]] = (3, 5, 10)          # 구간 전체
-COMPARE_TIERS: Final[tuple[int, ...]] = (5, 10)     # 전주/평균 대비 구간
+TIERS: Final[tuple[int, ...]] = (2, 4)           # 구간 전체 (모바일 첫 페이지 노출 한계)
+COMPARE_TIERS: Final[tuple[int, ...]] = (4,)    # 전주/평균 대비 구간
 LOOKBACK_DAYS: Final[int] = 45                      # 히스토리 탭 로드 범위
 SUMMARY_ROWS: Final[frozenset[str]] = frozenset({"합계", "합계 노출"})
 

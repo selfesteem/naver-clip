@@ -59,10 +59,10 @@ def test_tab_stats_counts() -> None:
     s = tab_stats(date(2026, 9, 22), sample_tab())
     assert (s.total, s.processed, s.section_none, s.missing, s.error) == (6, 4, 1, 1, 1), s
     assert (s.exposed_any, s.videos_any) == (2, 2), s  # (chA,t1),(chB,t2) 고유 영상
-    assert s.tiers[3].entries == 3, s.tiers[3]          # kw1의 1·2위 + kw2의 2위
-    assert s.tiers[3].keywords == 2, s.tiers[3]
-    assert s.tiers[10].entries == 4, s.tiers[10]        # kw1의 4위 추가
-    assert s.tier_rate(3) == 50.0, s.tier_rate(3)       # 2 / 검색완료 4
+    assert s.tiers[2].entries == 3, s.tiers[2]          # kw1의 1·2위 + kw2의 2위
+    assert s.tiers[2].keywords == 2, s.tiers[2]
+    assert s.tiers[4].entries == 4, s.tiers[4]          # kw1의 4위 추가
+    assert s.tier_rate(2) == 50.0, s.tier_rate(2)       # 2 / 검색완료 4
 
 
 def test_parse_tab_date() -> None:
@@ -98,8 +98,9 @@ def test_build_report_with_history() -> None:
                     "중복제거 (네이버클립 노출 기준 - 키워드 단위)", "전주 동일(09/15)",
                     "9월 평균 대비", "주 평균 대비"):
         assert section in r, f"섹션 누락: {section}\n{r}"
-    for tier in ("1-3위", "1-5위", "1-10위"):
+    for tier in ("1-2위", "1-4위"):
         assert tier in r, f"구간 누락: {tier}\n{r}"
+    assert "1-3위" not in r and "1-5위" not in r and "1-10위" not in r, r  # 체크 범위 밖 구간 미표시
     assert "▲1개" in r and "▲10.0%p" in r, r  # 전일 2→3개, 50.0%→60.0%
 
 
